@@ -1,0 +1,10 @@
+# ignore these file
+.vscode/*
+__pycache__/*
+data/*
+mnist/*
+PHM/*
+model/*
+logger.py
+test.py
+usedataset.py

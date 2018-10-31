@@ -11,19 +11,15 @@ class CNN(nn.Module):
     def __init__(self, feature_size):
         super(CNN, self).__init__()
         self.cnn_net = nn.Sequential(
-            nn.Conv1d(2,32,5,1,2),          #in_shape (2,2560)
+            nn.Conv1d(2,32,65,1,32),          #in_shape (2,2560)
             nn.BatchNorm1d(32),
             nn.ReLU(),
-            nn.MaxPool1d(4),                #out_shape (32,640)
-            nn.Conv1d(32,32,5,1,2),         #in_shape (32,640)
+            nn.MaxPool1d(8),                #out_shape (32,320)
+            nn.Conv1d(32,32,5,1,2),         #in_shape (32,320)
             nn.BatchNorm1d(32),
             nn.ReLU(),
-            nn.MaxPool1d(4),                #out_shape (32,160)
-            nn.Conv1d(32,64,3,1,1),         #in_shape (32,160)
-            nn.BatchNorm1d(64),
-            nn.ReLU(),
-            nn.MaxPool1d(2),                #out_shape (64,80)
-            nn.Conv1d(64,64,3,1,1),         #in_shape (64,80)
+            nn.MaxPool1d(4),                #out_shape (32,80)
+            nn.Conv1d(32,64,3,1,1),         #in_shape (32,80)
             nn.BatchNorm1d(64),
             nn.ReLU(),
             nn.MaxPool1d(2),                #out_shape (64,40)
@@ -31,13 +27,17 @@ class CNN(nn.Module):
             nn.BatchNorm1d(64),
             nn.ReLU(),
             nn.MaxPool1d(2),                #out_shape (64,20)
+            nn.Conv1d(64,128,3,1,1),        #in_shape (64,20)
+            nn.BatchNorm1d(128),
+            nn.ReLU(),
+            nn.MaxPool1d(2),                #out_shape (128,10)
         )
         self.nn_net = nn.Sequential(
-            nn.Dropout(0.3),
-            nn.Linear(64*20,256),
+            nn.Dropout(0.25),
+            nn.Linear(128*10,256),
             nn.BatchNorm1d(256),
             nn.ReLU(),
-            nn.Dropout(0.3),
+            nn.Dropout(0.25),
             nn.Linear(256,128),
             nn.BatchNorm1d(128),
             nn.ReLU(),
@@ -54,6 +54,12 @@ class CNN(nn.Module):
         output = self.out(x)
         return output, x    # return x for visualization
 
+class Custom_loss(nn.Module):
+    def __init__(self):
+        super(Custom_loss, self).__init__()
+    def forward(self,pred,tru):
+        return torch.mean((pred-tru)**2/(tru+1))
+
 class CNN_GRU():
     def __init__(self):
         self.input_shape = (2560,2)
@@ -67,7 +73,7 @@ class CNN_GRU():
     def _build_cnn(self):
         model = CNN(self.feature_size)
         self.cnn_optimizer = torch.optim.Adam(model.parameters(), lr=0.001)   # optimize all cnn parameters
-        self.cnn_loss_func = nn.MSELoss()                       # the target label is not one-hotted
+        self.cnn_loss_func = Custom_loss()                      # the target label is not one-hotted
         if torch.cuda.is_available():
             model = model.cuda()
         return model
@@ -88,8 +94,16 @@ class CNN_GRU():
     def _normalize(self,data):
         r_data = np.zeros_like(data)
         for i in range(r_data.shape[0]):
-            r_data[i,] = (data[i]-np.min(data[i]))/(np.max(data[i])-np.min(data[i]))
+            r_data[i,] = ((data[i]-np.min(data[i]))/(np.max(data[i])-np.min(data[i]))-0.5)*2
         return r_data
+
+    def _add_noise(self,data,snr=0):
+        snr = 10**(snr/10.0)
+        for i in range(data.shape[0]):
+            xpower = np.sum(data[i,]**2)/np.size(data[i,])
+            npower = xpower/snr
+            data[i,] += (np.random.randn(data[i,].size).reshape(data[i,].shape))*np.sqrt(npower)
+        return data
 
     def _c_preprocess(self,select='train',is_random=True):
         if select == 'train':
@@ -176,7 +190,9 @@ class CNN_GRU():
     def _cnn_fit(self,model,data,label,batch_size,epochs):
         model.train()
         data_loader = dataset_ndarry_pytorch(data,label,batch_size,True)
+        print_per_sample = 2000
         for epoch in range(epochs):
+            counter_per_epoch = 0
             for i,(x_data,x_label) in enumerate(data_loader):
                 x_data = x_data.type(torch.FloatTensor)
                 x_label = x_label.type(torch.FloatTensor)
@@ -193,10 +209,15 @@ class CNN_GRU():
                 self.cnn_optimizer.zero_grad()
                 loss.backward()
                 self.cnn_optimizer.step()
+                if i == 0:
+                    p_loss = loss
+                else:
+                    p_loss += (loss-p_loss)/(i+1)
 
-                if i % 50 == 0:
+                if i*batch_size > counter_per_epoch:
                     accuracy = float(np.mean((out.data.cpu().numpy()-x_label.data.cpu().numpy())**2/(x_label.data.cpu().numpy()+1)))
-                    print('Epoch: ', epoch, '| train loss: %.4f' % loss.data.cpu().numpy(), '| test accuracy: %.2f' % accuracy)
+                    print('Epoch: ', epoch, '| train loss: %.4f' % p_loss.data.cpu().numpy(), '| test accuracy: %.2f' % accuracy)
+                    counter_per_epoch += print_per_sample
 
             torch.cuda.empty_cache()        #empty useless variable
 
@@ -221,18 +242,30 @@ class CNN_GRU():
         return predict_lable
 
     def test_cnn(self):
-        # c_train_data,c_train_label = self._c_preprocess()
-        # c_train_data = self._normalize(c_train_data)
-        # self.cnn = self._build_cnn()
-        # self._cnn_fit(self.cnn,c_train_data,c_train_label,32,50)
+        c_train_data,c_train_label = self._c_preprocess()
+        c_train_data = self._normalize(c_train_data)
+        c_train_data = self._add_noise(c_train_data,-4)
+        self.cnn = self._build_cnn()
+        self._cnn_fit(self.cnn,c_train_data,c_train_label,16,80)
 
-        # torch.save(self.cnn,'./model/cnn')
+        torch.save(self.cnn,'./model/cnn')
         self.cnn = torch.load('./model/cnn')
     
         c_test_data,c_test_label = self._c_preprocess('test',False)
         c_test_data = self._normalize(c_test_data)
+        # c_test_data = self._add_noise(c_test_data,-4)
         predict_label = self._cnn_predict(self.cnn,c_test_data,c_test_label)
 
+        plt.subplot(2,1,1)
+        plt.plot(c_test_label)
+        plt.scatter([x for x in range(predict_label.shape[0])],predict_label,s=2)
+
+        c_test_data,c_test_label = self._c_preprocess('train',False)
+        c_test_data = self._normalize(c_test_data)
+        # c_test_data = self._add_noise(c_test_data,-4)
+        predict_label = self._cnn_predict(self.cnn,c_test_data,c_test_label)
+
+        plt.subplot(2,1,2)
         plt.plot(c_test_label)
         plt.scatter([x for x in range(predict_label.shape[0])],predict_label,s=2)
         plt.show()
