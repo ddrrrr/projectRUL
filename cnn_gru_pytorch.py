@@ -174,6 +174,7 @@ class CNN_GRU():
     #     self.gru.save_weights('./weights/gru.h5')
 
     def _cnn_fit(self,model,data,label,batch_size,epochs):
+        model.train()
         data_loader = dataset_ndarry_pytorch(data,label,batch_size,True)
         for epoch in range(epochs):
             for i,(x_data,x_label) in enumerate(data_loader):
@@ -194,25 +195,47 @@ class CNN_GRU():
                 self.cnn_optimizer.step()
 
                 if i % 50 == 0:
-                    accuracy = float(np.mean((out.data.cpu().numpy()-x_label.data.cpu().numpy())**2/x_label.data.cpu().numpy()))
+                    accuracy = float(np.mean((out.data.cpu().numpy()-x_label.data.cpu().numpy())**2/(x_label.data.cpu().numpy()+1)))
                     print('Epoch: ', epoch, '| train loss: %.4f' % loss.data.cpu().numpy(), '| test accuracy: %.2f' % accuracy)
 
+            torch.cuda.empty_cache()        #empty useless variable
+
+    def _cnn_predict(self,model,data,label):
+        predict_lable = np.array([])
+        model.eval()
+        data_loader = dataset_ndarry_pytorch(data,label,64,False)
+        for i,(x_data,x_label) in enumerate(data_loader):
+            x_data = x_data.type(torch.FloatTensor)
+            x_label = x_label.type(torch.FloatTensor)
+            if torch.cuda.is_available():
+                x_data = Variable(x_data).cuda()
+                x_label = Variable(x_label).cuda()
+            else:
+                x_data = Variable(x_data)
+                x_label = Variable(x_label)
+            [out,feature] = model(x_data)
+            if predict_lable.size == 0:
+                predict_lable = out.data.cpu().numpy()
+            else:
+                predict_lable = np.append(predict_lable,out.data.cpu().numpy(),axis=0)
+        return predict_lable
 
     def test_cnn(self):
-        c_train_data,c_train_label = self._c_preprocess()
-        c_train_data = self._normalize(c_train_data)
-        self.cnn = self._build_cnn()
-        self._cnn_fit(self.cnn,c_train_data,c_train_label,32,50)
+        # c_train_data,c_train_label = self._c_preprocess()
+        # c_train_data = self._normalize(c_train_data)
+        # self.cnn = self._build_cnn()
+        # self._cnn_fit(self.cnn,c_train_data,c_train_label,32,50)
+
+        # torch.save(self.cnn,'./model/cnn')
+        self.cnn = torch.load('./model/cnn')
     
         c_test_data,c_test_label = self._c_preprocess('test',False)
         c_test_data = self._normalize(c_test_data)
-        c_test_data = Variable(c_test_data)
-        [predict_label,predict_feature] = self.cnn(c_test_data).data.numpy()
-        print(np.shape(predict_label))
-        # predict_label = self.cnn.predict(c_test_data)
+        predict_label = self._cnn_predict(self.cnn,c_test_data,c_test_label)
 
         plt.plot(c_test_label)
-        plt.scatter([x for x in range(predict_label.shape[0])],predict_label)
+        plt.scatter([x for x in range(predict_label.shape[0])],predict_label,s=2)
+        plt.show()
 
 def dataset_ndarry_pytorch(data,label,batch_size,shuffle):
     assert data.shape[0] == label.shape[0]
