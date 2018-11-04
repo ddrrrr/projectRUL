@@ -1,11 +1,137 @@
+import math
 import numpy as np
 import random
 import matplotlib.pyplot as plt
+from collections import OrderedDict
 from dataset import DataSet
 import torch
 from torch import nn, optim
 from torch.autograd import Variable
 from torch.utils.data import DataLoader
+
+class BasicBlock(nn.Module):
+    expansion = 1
+    def __init__(self, inplanes, planes, stride=1, downsample=None):
+        super(BasicBlock, self).__init__()
+        m = OrderedDict()
+        m['conv1'] = nn.Conv1d(inplanes, planes, kernel_size=3, stride=stride, padding=1, bias=False)
+        m['bn1'] = nn.BatchNorm1d(planes)
+        m['relu1'] = nn.ReLU(inplace=True)
+        m['conv2'] = nn.Conv1d(planes, planes, kernel_size=3, stride=1, padding=1, bias=False)
+        m['bn2'] = nn.BatchNorm1d(planes)
+        self.group1 = nn.Sequential(m)
+
+        self.relu= nn.Sequential(nn.ReLU(inplace=True))
+        self.downsample = downsample
+
+    def forward(self, x):
+        if self.downsample is not None:
+            residual = self.downsample(x)
+        else:
+            residual = x
+
+        out = self.group1(x) + residual
+
+        out = self.relu(out)
+
+        return out
+
+
+class Bottleneck(nn.Module):
+    expansion = 4
+    def __init__(self, inplanes, planes, stride=1, downsample=None):
+        super(Bottleneck, self).__init__()
+        m  = OrderedDict()
+        m['conv1'] = nn.Conv1d(inplanes, planes, kernel_size=1, bias=False)
+        m['bn1'] = nn.BatchNorm1d(planes)
+        m['relu1'] = nn.ReLU(inplace=True)
+        m['conv2'] = nn.Conv1d(planes, planes, kernel_size=3, stride=stride, padding=1, bias=False)
+        m['bn2'] = nn.BatchNorm1d(planes)
+        m['relu2'] = nn.ReLU(inplace=True)
+        m['conv3'] = nn.Conv1d(planes, planes * 4, kernel_size=1, bias=False)
+        m['bn3'] = nn.BatchNorm1d(planes * 4)
+        self.group1 = nn.Sequential(m)
+
+        self.relu= nn.Sequential(nn.ReLU(inplace=True))
+        self.downsample = downsample
+
+    def forward(self, x):
+        if self.downsample is not None:
+            residual = self.downsample(x)
+        else:
+            residual = x
+
+        out = self.group1(x) + residual
+        out = self.relu(out)
+
+        return out
+
+class ResNet(nn.Module):
+    def __init__(self, block, layers, feature_size=8):
+        self.inplanes = 64
+        super(ResNet, self).__init__()
+
+        m = OrderedDict()
+        m['conv1'] = nn.Conv1d(2, 64, kernel_size=129, stride=1, padding=0, bias=False)
+        m['bn1'] = nn.BatchNorm1d(64)
+        m['relu1'] = nn.ReLU(inplace=True)
+        m['maxpool'] = nn.MaxPool1d(kernel_size=19, stride=19, padding=0)
+        self.group1= nn.Sequential(m)
+
+        self.layer1 = self._make_layer(block, 64, layers[0], stride=2)
+        self.layer2 = self._make_layer(block, 128, layers[1], stride=2)
+        self.layer3 = self._make_layer(block, 256, layers[2], stride=2)
+        self.layer4 = self._make_layer(block, 256, layers[3], stride=2)
+
+        self.avgpool = nn.Sequential(nn.AvgPool1d(8))
+
+        self.group2 = nn.Sequential(
+            OrderedDict([
+                ('fc', nn.Linear(256 * block.expansion, feature_size))
+            ])
+        )
+
+        self.output = nn.Linear(feature_size,1)
+
+        # initialization weight of conv2d and bias of BN
+        for m in self.modules():
+            if isinstance(m, nn.Conv1d):
+                n = m.kernel_size[0] * m.out_channels
+                m.weight.data.normal_(0, math.sqrt(2. / n))
+            elif isinstance(m, nn.BatchNorm1d):
+                m.weight.data.fill_(1)
+                m.bias.data.zero_()
+
+    def _make_layer(self, block, planes, blocks, stride=1):
+        downsample = None
+        if stride != 1 or self.inplanes != planes * block.expansion:
+            downsample = nn.Sequential(
+                nn.Conv1d(self.inplanes, planes * block.expansion, kernel_size=1, stride=stride, bias=False),
+                nn.BatchNorm1d(planes * block.expansion),
+            )
+
+        layers = []
+        layers.append(block(self.inplanes, planes, stride, downsample))
+        self.inplanes = planes * block.expansion
+        for i in range(1, blocks):
+            layers.append(block(self.inplanes, planes))
+
+        return nn.Sequential(*layers)
+
+    def forward(self, x):
+        x = self.group1(x)
+
+        x = self.layer1(x)
+        x = self.layer2(x)
+        x = self.layer3(x)
+        x = self.layer4(x)
+
+        x = self.avgpool(x)
+        x = x.view(x.size(0), -1)
+        x = self.group2(x)
+        x = self.output(x)
+
+        return x
 
 class CNN(nn.Module):
     def __init__(self, feature_size):
@@ -304,5 +430,8 @@ def dataset_ndarry_pytorch(data,label,batch_size,shuffle):
     return DataLoader(customdataset,batch_size=batch_size,shuffle=shuffle)
 
 if __name__ == '__main__':
-    process = CNN_GRU()
-    process.test_cnn()
+    model = ResNet(BasicBlock, [2, 2, 2, 2])
+    print(model)
+    x = Variable(torch.randn(1, 2, 2560))
+    y = model(x)
+    print(y)
