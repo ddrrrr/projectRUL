@@ -31,10 +31,14 @@ class CNN(nn.Module):
             nn.BatchNorm1d(128),
             nn.ReLU(),
             nn.MaxPool1d(2),                #out_shape (128,10)
+            nn.Conv1d(128,128,3,1,1),        #in_shape (128,10)
+            nn.BatchNorm1d(128),
+            nn.ReLU(),
+            nn.MaxPool1d(2),                #out_shape (128,5)
         )
         self.nn_net = nn.Sequential(
             nn.Dropout(0.25),
-            nn.Linear(128*10,256),
+            nn.Linear(128*5,256),
             nn.BatchNorm1d(256),
             nn.ReLU(),
             nn.Dropout(0.25),
@@ -72,8 +76,23 @@ class CNN_GRU():
     
     def _build_cnn(self):
         model = CNN(self.feature_size)
-        self.cnn_optimizer = torch.optim.Adam(model.parameters(), lr=0.001)   # optimize all cnn parameters
-        self.cnn_loss_func = Custom_loss()                      # the target label is not one-hotted
+
+        weight_p, bias_p = [],[]
+        for name, p in model.named_parameters():
+            if 'bias' in name:
+                bias_p += [p]
+            else:
+                weight_p += [p]
+            # 这里的model中每个参数的名字都是系统自动命名的，只要是权值都是带有weight，偏置都带有bias，
+            # 因此可以通过名字判断属性，这个和tensorflow不同，tensorflow是可以用户自己定义名字的，当然也会系统自己定义。
+        self.cnn_optimizer = torch.optim.Adam([
+                {'params': weight_p, 'weight_decay':1e-6},
+                {'params': bias_p, 'weight_decay':0}
+                ], lr=1e-3)
+
+        # self.cnn_optimizer = torch.optim.Adam(model.parameters(), lr=0.001)   # optimize all cnn parameters
+        # self.cnn_loss_func = Custom_loss()                      # the target label is not one-hotted
+        self.cnn_loss_func = nn.MSELoss()
         if torch.cuda.is_available():
             model = model.cuda()
         return model
