@@ -412,7 +412,7 @@ class CNN_GRU():
                 # 向前传播
                 out = model(x_data)[0]
                 out = out[:,-1,:]
-                out = out.view(batch_size,)
+                out = out.view(out.shape[0],)
                 loss = self.gru_loss_func(out, x_label)
                 # 向后传播
                 self.gru_optimizer.zero_grad()
@@ -453,4 +453,4 @@ def dataset_ndarry_pytorch(data,label,batch_size,shuffle):
 
 if __name__ == '__main__':
     process = CNN_GRU()
-    process.test_cnn()
+    process.test_gru()
