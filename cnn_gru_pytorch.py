@@ -192,7 +192,6 @@ class Custom_loss(nn.Module):
 
 class CNN_GRU():
     def __init__(self):
-        self.input_shape = (2560,2)
         self.feature_size = 16
         self.dataset = DataSet.load_dataset(name='phm_data')
         self.train_bearings = ['Bearing1_1','Bearing1_2','Bearing2_1','Bearing2_2','Bearing3_1','Bearing3_2']
@@ -260,8 +259,6 @@ class CNN_GRU():
             temp_label = self.dataset.get_value('RUL',condition={'bearing_name':self.test_bearings})
         else:
             raise ValueError('wrong selection!')
-        # temp_data = self.dataset.get_value('data',condition={'bearing_name':self.train_bearings})
-        # temp_label = self.dataset.get_value('RUL',condition={'bearing_name':self.train_bearings})
         train_data = np.array([])
         train_label = np.array([])
         for i,x in enumerate(temp_label):
@@ -281,40 +278,41 @@ class CNN_GRU():
             train_label = train_label[idx]
         return np.transpose(train_data,(0,2,1)),train_label[:,np.newaxis]
     
-    # def _g_preprocess(self,select):
-    #     if select == 'train':
-    #         temp_data = self.dataset.get_value('data',condition={'bearing_name':self.train_bearings})
-    #         temp_label = self.dataset.get_value('RUL',condition={'bearing_name':self.train_bearings})
-    #     elif select == 'test':
-    #         temp_data = self.dataset.get_value('data',condition={'bearing_name':self.test_bearings})
-    #         temp_label = self.dataset.get_value('RUL',condition={'bearing_name':self.test_bearings})
-    #     else:
-    #         raise ValueError('wrong selection!')
+    def _g_preprocess(self,select):
+        if select == 'train':
+            temp_data = self.dataset.get_value('data',condition={'bearing_name':self.train_bearings})
+            temp_label = self.dataset.get_value('RUL',condition={'bearing_name':self.train_bearings})
+        elif select == 'test':
+            temp_data = self.dataset.get_value('data',condition={'bearing_name':self.test_bearings})
+            temp_label = self.dataset.get_value('RUL',condition={'bearing_name':self.test_bearings})
+        else:
+            raise ValueError('wrong selection!')
 
-    #     r_temp_label = []
-    #     r_temp_data = []
-    #     cnn_feature = keras.Model(self.cnn.input,self.cnn.get_layer('feature').output)
-    #     for i,x in enumerate(temp_label):
-    #         t_label = [y for y in range(x,x + temp_data[i].shape[0])]
-    #         t_label.reverse()
-    #         r_temp_label.append(np.array(t_label))
-    #         r_temp_data.append(cnn_feature.predict(temp_data[i]))
+        self.cnn = torch.load('./model/cnn')
 
-    #     r_data = []
-    #     r_label = []
-    #     for i in range(10000):
-    #         bearing_idx = random.randint(0,len(r_temp_data)-1)
-    #         random_bearing = r_temp_data[bearing_idx]
-    #         random_bearing_RUL = r_temp_label[bearing_idx]
-    #         start_idx = random.randint(0,random_bearing.shape[0]-101)
-    #         end_idx = start_idx + random.randint(50,100)
-    #         r_t_data = random_bearing[start_idx:end_idx,]
-    #         if r_t_data.shape[0] < 100:
-    #             r_t_data = np.append(np.zeros((100-r_t_data.shape[0],self.feature_size)),r_t_data,axis=0)
-    #         r_data.append(r_t_data)
-    #         r_label.append(random_bearing_RUL[end_idx])
+        r_temp_label = []
+        r_temp_data = []
+        for i,x in enumerate(temp_label):
+            t_label = [y for y in range(x,x + temp_data[i].shape[0])]
+            t_label.reverse()
+            r_temp_label.append(np.array(t_label))
+            r_temp_data.append(self._cnn_predict(self.cnn,np.transpose(temp_data[i],(0,2,1)))[1])
 
-    #     return np.array(r_data),np.array(r_label)
+        r_data = []
+        r_label = []
+        for i in range(10000):
+            bearing_idx = random.randint(0,len(r_temp_data)-1)
+            random_bearing = r_temp_data[bearing_idx]
+            random_bearing_RUL = r_temp_label[bearing_idx]
+            start_idx = random.randint(0,random_bearing.shape[0]-101)
+            end_idx = start_idx + random.randint(50,100)
+            r_t_data = random_bearing[start_idx:end_idx,]
+            if r_t_data.shape[0] < 100:
+                r_t_data = np.append(np.zeros((100-r_t_data.shape[0],self.feature_size)),r_t_data,axis=0)
+            r_data.append(r_t_data)
+            r_label.append(random_bearing_RUL[end_idx])
+
+        return np.array(r_data),np.array(r_label)
         
     # def train(self):
     #     c_train_data,c_train_label = self._c_preprocess()
@@ -367,40 +365,38 @@ class CNN_GRU():
 
             torch.cuda.empty_cache()        #empty useless variable
 
-    def _cnn_predict(self,model,data,label):
+    def _cnn_predict(self,model,data):
         predict_lable = np.array([])
         model.eval()
-        data_loader = dataset_ndarry_pytorch(data,label,64,False)
-        for i,(x_data,x_label) in enumerate(data_loader):
+        prediction = []
+        for i in range(math.ceil(data.shape[0]/64)):
+            x_data = data[i*64:min(data.shape[0],(i+1)*64),]
+            x_data = torch.from_numpy(x_data)
             x_data = x_data.type(torch.FloatTensor)
-            x_label = x_label.type(torch.FloatTensor)
-            if torch.cuda.is_available():
-                x_data = Variable(x_data).cuda()
-                x_label = Variable(x_label).cuda()
+            x_data = Variable(x_data).cuda()
+            x_prediction = model(x_data)
+            if len(prediction) == 0:
+                for i,x in enumerate(x_prediction):
+                    prediction.append(x_prediction[i].data.cpu().numpy())
             else:
-                x_data = Variable(x_data)
-                x_label = Variable(x_label)
-            [out,feature] = model(x_data)
-            if predict_lable.size == 0:
-                predict_lable = out.data.cpu().numpy()
-            else:
-                predict_lable = np.append(predict_lable,out.data.cpu().numpy(),axis=0)
-        return predict_lable
+                for i,x in enumerate(prediction):
+                    prediction[i] = np.append(x,x_prediction[i].data.cpu().numpy(),axis=0)
+            del x_prediction
+        return prediction
 
     def test_cnn(self):
-        c_train_data,c_train_label = self._c_preprocess()
-        c_train_data = self._normalize(c_train_data)
-        c_train_data = self._add_noise(c_train_data,-4)
-        self.cnn = self._build_cnn()
-        self._cnn_fit(self.cnn,c_train_data,c_train_label,16,80)
+        # c_train_data,c_train_label = self._c_preprocess()
+        # c_train_data = self._normalize(c_train_data)
+        # c_train_data = self._add_noise(c_train_data,-4)
+        # self.cnn = self._build_cnn()
+        # self._cnn_fit(self.cnn,c_train_data,c_train_label,16,80)
 
-        torch.save(self.cnn,'./model/cnn')
+        # torch.save(self.cnn,'./model/cnn')
         self.cnn = torch.load('./model/cnn')
     
         c_test_data,c_test_label = self._c_preprocess('test',False)
         c_test_data = self._normalize(c_test_data)
-        # c_test_data = self._add_noise(c_test_data,-4)
-        predict_label = self._cnn_predict(self.cnn,c_test_data,c_test_label)
+        [predict_label,feature] = self._cnn_predict(self.cnn,c_test_data)
 
         plt.subplot(2,1,1)
         plt.plot(c_test_label)
@@ -408,13 +404,16 @@ class CNN_GRU():
 
         c_test_data,c_test_label = self._c_preprocess('train',False)
         c_test_data = self._normalize(c_test_data)
-        # c_test_data = self._add_noise(c_test_data,-4)
-        predict_label = self._cnn_predict(self.cnn,c_test_data,c_test_label)
+        [predict_label,feature] = self._cnn_predict(self.cnn,c_test_data)
 
         plt.subplot(2,1,2)
         plt.plot(c_test_label)
         plt.scatter([x for x in range(predict_label.shape[0])],predict_label,s=2)
         plt.show()
+
+    def test_gru(self):
+        c_train_data,c_train_label = self._g_preprocess('train')                        # data.shape=(10000,100,16), label.shape=(10000,)
+        
 
 def dataset_ndarry_pytorch(data,label,batch_size,shuffle):
     assert data.shape[0] == label.shape[0]
