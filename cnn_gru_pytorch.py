@@ -83,7 +83,7 @@ class ResNet(nn.Module):
         self.layer3 = self._make_layer(block, 256, layers[2], stride=4)
         self.layer4 = self._make_layer(block, 256, layers[3], stride=4)
 
-        self.avgpool = nn.Sequential(nn.AvgPool1d(8))
+        self.avgpool = nn.Sequential(nn.AvgPool1d(10))
 
         self.group2 = nn.Sequential(
             OrderedDict([
@@ -128,10 +128,10 @@ class ResNet(nn.Module):
 
         x = self.avgpool(x)
         x = x.view(x.size(0), -1)
-        x = self.group2(x)
-        x = self.output(x)
+        feature = self.group2(x)
+        x = self.output(feature)
 
-        return x
+        return x,feature
 
 class CNN(nn.Module):
     def __init__(self, feature_size):
@@ -201,22 +201,23 @@ class CNN_GRU():
                                 'Bearing3_3']
     
     def _build_cnn(self):
-        model = CNN(self.feature_size)
+        # model = CNN(self.feature_size)
+        model = ResNet(Bottleneck, [3, 4, 6, 3])
 
         weight_p, bias_p = [],[]
-        for name, p in model.named_parameters():
-            if 'bias' in name:
-                bias_p += [p]
-            else:
-                weight_p += [p]
-            # 这里的model中每个参数的名字都是系统自动命名的，只要是权值都是带有weight，偏置都带有bias，
-            # 因此可以通过名字判断属性，这个和tensorflow不同，tensorflow是可以用户自己定义名字的，当然也会系统自己定义。
-        self.cnn_optimizer = torch.optim.Adam([
-                {'params': weight_p, 'weight_decay':1e-6},
-                {'params': bias_p, 'weight_decay':0}
-                ], lr=1e-3)
+        # for name, p in model.named_parameters():
+        #     if 'bias' in name:
+        #         bias_p += [p]
+        #     else:
+        #         weight_p += [p]
+        #     # 这里的model中每个参数的名字都是系统自动命名的，只要是权值都是带有weight，偏置都带有bias，
+        #     # 因此可以通过名字判断属性，这个和tensorflow不同，tensorflow是可以用户自己定义名字的，当然也会系统自己定义。
+        # self.cnn_optimizer = torch.optim.Adam([
+        #         {'params': weight_p, 'weight_decay':1e-6},
+        #         {'params': bias_p, 'weight_decay':0}
+        #         ], lr=1e-3)
 
-        # self.cnn_optimizer = torch.optim.Adam(model.parameters(), lr=0.001)   # optimize all cnn parameters
+        self.cnn_optimizer = torch.optim.Adam(model.parameters(), lr=0.001)   # optimize all cnn parameters
         # self.cnn_loss_func = Custom_loss()                      # the target label is not one-hotted
         self.cnn_loss_func = nn.MSELoss()
         if torch.cuda.is_available():
@@ -430,8 +431,5 @@ def dataset_ndarry_pytorch(data,label,batch_size,shuffle):
     return DataLoader(customdataset,batch_size=batch_size,shuffle=shuffle)
 
 if __name__ == '__main__':
-    model = ResNet(Bottleneck, [3, 4, 6, 3])
-    print(model)
-    x = Variable(torch.randn(1, 2, 2560))
-    y = model(x)
-    print(y)
+    process = CNN_GRU()
+    process.test_cnn()
