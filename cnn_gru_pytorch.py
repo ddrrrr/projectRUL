@@ -313,23 +313,6 @@ class CNN_GRU():
             r_label.append(random_bearing_RUL[end_idx])
 
         return np.array(r_data),np.array(r_label)
-        
-    # def train(self):
-    #     c_train_data,c_train_label = self._c_preprocess()
-    #     self.cnn = self._build_cnn()
-    #     self.cnn.fit(c_train_data,c_train_label,batch_size=32,epochs=50)
-
-    #     g_train_data,g_train_label = self._g_preprocess('train')
-    #     self.gru = self._build_gru()
-    #     self.gru.fit(g_train_data,g_train_label,batch_size=32,epochs=50)
-
-    # def test(self):
-    #     test_data,test_label = self._g_preprocess('test')
-    #     self.gru.evaluate(test_data,test_label)
-    
-    # def save(self):
-    #     self.cnn.save_weights('./weights/cnn.h5')
-    #     self.gru.save_weights('./weights/gru.h5')
 
     def _cnn_fit(self,model,data,label,batch_size,epochs):
         model.train()
@@ -451,6 +434,8 @@ class CNN_GRU():
         g_train_data,g_train_label = self._g_preprocess('train')                        # data.shape=(10000,100,16), label.shape=(10000,)
         self.gru = self._build_gru()
         self._gru_fit(self.gru,g_train_data,g_train_label,64,80)
+
+        torch.save(self.gru,'./model/gru')
 
 def dataset_ndarry_pytorch(data,label,batch_size,shuffle):
     assert data.shape[0] == label.shape[0]
