@@ -72,16 +72,16 @@ class ResNet(nn.Module):
         super(ResNet, self).__init__()
 
         m = OrderedDict()
-        m['conv1'] = nn.Conv1d(2, 64, kernel_size=129, stride=1, padding=0, bias=False)
+        m['conv1'] = nn.Conv1d(2, 64, kernel_size=64, stride=2, padding=31, bias=False)
         m['bn1'] = nn.BatchNorm1d(64)
         m['relu1'] = nn.ReLU(inplace=True)
-        m['maxpool'] = nn.MaxPool1d(kernel_size=19, stride=19, padding=0)
+        m['maxpool'] = nn.MaxPool1d(kernel_size=2, stride=2, padding=0)
         self.group1= nn.Sequential(m)
 
-        self.layer1 = self._make_layer(block, 64, layers[0], stride=2)
-        self.layer2 = self._make_layer(block, 128, layers[1], stride=2)
-        self.layer3 = self._make_layer(block, 256, layers[2], stride=2)
-        self.layer4 = self._make_layer(block, 256, layers[3], stride=2)
+        self.layer1 = self._make_layer(block, 64, layers[0], stride=1)
+        self.layer2 = self._make_layer(block, 128, layers[1], stride=4)
+        self.layer3 = self._make_layer(block, 256, layers[2], stride=4)
+        self.layer4 = self._make_layer(block, 256, layers[3], stride=4)
 
         self.avgpool = nn.Sequential(nn.AvgPool1d(8))
 
@@ -430,7 +430,7 @@ def dataset_ndarry_pytorch(data,label,batch_size,shuffle):
     return DataLoader(customdataset,batch_size=batch_size,shuffle=shuffle)
 
 if __name__ == '__main__':
-    model = ResNet(BasicBlock, [2, 2, 2, 2])
+    model = ResNet(Bottleneck, [3, 4, 6, 3])
     print(model)
     x = Variable(torch.randn(1, 2, 2560))
     y = model(x)
