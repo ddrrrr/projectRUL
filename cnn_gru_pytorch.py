@@ -191,7 +191,7 @@ class Custom_loss(nn.Module):
 
 class CNN_GRU():
     def __init__(self):
-        self.feature_size = 16
+        self.feature_size = 8
         self.dataset = DataSet.load_dataset(name='phm_data')
         self.train_bearings = ['Bearing1_1','Bearing1_2','Bearing2_1','Bearing2_2','Bearing3_1','Bearing3_2']
         self.test_bearings = ['Bearing1_3','Bearing1_4','Bearing1_5','Bearing1_6','Bearing1_7',
@@ -349,11 +349,12 @@ class CNN_GRU():
             torch.cuda.empty_cache()        #empty useless variable
 
     def _cnn_predict(self,model,data):
+        batch_size = 32
         predict_lable = np.array([])
         model.eval()
         prediction = []
-        for i in range(math.ceil(data.shape[0]/64)):
-            x_data = data[i*64:min(data.shape[0],(i+1)*64),]
+        for i in range(math.ceil(data.shape[0]/batch_size)):
+            x_data = data[i*batch_size:min(data.shape[0],(i+1)*batch_size),]
             x_data = torch.from_numpy(x_data)
             x_data = x_data.type(torch.FloatTensor)
             x_data = Variable(x_data).cuda()
