@@ -36,7 +36,6 @@ class BasicBlock(nn.Module):
 
         return out
 
-
 class Bottleneck(nn.Module):
     expansion = 4
     def __init__(self, inplanes, planes, stride=1, downsample=None):
@@ -223,18 +222,18 @@ class CNN_GRU():
             model = model.cuda()
         return model
 
-    # def _build_gru(self):
-    #     inp = KL.Input(shape=(100,self.feature_size))
-    #     x = inp
-    #     x = KL.Masking()(x)
-    #     x = KL.GRU(32,return_sequences=True)(x)
-    #     x = KL.GRU(1)(x)
-    #     out = x
-
-    #     model = keras.Model(inp,out)
-    #     model.compile(optimizer=keras.optimizers.Adam(lr=0.001),
-    #                     loss='mse')
-    #     return model
+    def _build_gru(self):
+        model = nn.GRU(
+                input_size=self.feature_size,
+                hidden_size=1,
+                num_layers=2,
+                batch_first=True
+                )
+        self.gru_optimizer = torch.optim.Adam(model.parameters(),lr=0.001)
+        self.gru_loss_func = nn.MSELoss()
+        if torch.cuda.is_available():
+            model = model.cuda()
+        return model
 
     def _normalize(self,data):
         r_data = np.zeros_like(data)
@@ -296,7 +295,7 @@ class CNN_GRU():
             t_label = [y for y in range(x,x + temp_data[i].shape[0])]
             t_label.reverse()
             r_temp_label.append(np.array(t_label))
-            r_temp_data.append(self._cnn_predict(self.cnn,np.transpose(temp_data[i],(0,2,1)))[1])
+            r_temp_data.append(self._cnn_predict(self.cnn,self._normalize(np.transpose(temp_data[i],(0,2,1))))[1])
 
         r_data = []
         r_label = []
@@ -305,7 +304,8 @@ class CNN_GRU():
             random_bearing = r_temp_data[bearing_idx]
             random_bearing_RUL = r_temp_label[bearing_idx]
             start_idx = random.randint(0,random_bearing.shape[0]-101)
-            end_idx = start_idx + random.randint(50,100)
+            # end_idx = start_idx + random.randint(50,100)
+            end_idx = start_idx + 100
             r_t_data = random_bearing[start_idx:end_idx,]
             if r_t_data.shape[0] < 100:
                 r_t_data = np.append(np.zeros((100-r_t_data.shape[0],self.feature_size)),r_t_data,axis=0)
@@ -385,13 +385,13 @@ class CNN_GRU():
         return prediction
 
     def test_cnn(self):
-        # c_train_data,c_train_label = self._c_preprocess()
-        # c_train_data = self._normalize(c_train_data)
-        # c_train_data = self._add_noise(c_train_data,-4)
-        # self.cnn = self._build_cnn()
-        # self._cnn_fit(self.cnn,c_train_data,c_train_label,16,80)
+        c_train_data,c_train_label = self._c_preprocess()
+        c_train_data = self._normalize(c_train_data)
+        c_train_data = self._add_noise(c_train_data,-4)
+        self.cnn = self._build_cnn()
+        self._cnn_fit(self.cnn,c_train_data,c_train_label,64,80)
 
-        # torch.save(self.cnn,'./model/cnn')
+        torch.save(self.cnn,'./model/cnn')
         self.cnn = torch.load('./model/cnn')
     
         c_test_data,c_test_label = self._c_preprocess('test',False)
@@ -411,9 +411,46 @@ class CNN_GRU():
         plt.scatter([x for x in range(predict_label.shape[0])],predict_label,s=2)
         plt.show()
 
+    def _gru_fit(self,model,data,label,batch_size,epochs):
+        model.train()
+        data_loader = dataset_ndarry_pytorch(data,label,batch_size,True)
+        print_per_sample = 2000
+        for epoch in range(epochs):
+            counter_per_epoch = 0
+            for i,(x_data,x_label) in enumerate(data_loader):
+                x_data = x_data.type(torch.FloatTensor)
+                x_label = x_label.type(torch.FloatTensor)
+                if torch.cuda.is_available():
+                    x_data = Variable(x_data).cuda()
+                    x_label = Variable(x_label).cuda()
+                else:
+                    x_data = Variable(x_data)
+                    x_label = Variable(x_label)
+                # 向前传播
+                out = model(x_data)[0]
+                out = out[:,-1,:]
+                out = out.view(batch_size,)
+                loss = self.gru_loss_func(out, x_label)
+                # 向后传播
+                self.gru_optimizer.zero_grad()
+                loss.backward()
+                self.gru_optimizer.step()
+                if i == 0:
+                    p_loss = loss
+                else:
+                    p_loss += (loss-p_loss)/(i+1)
+
+                if i*batch_size > counter_per_epoch:
+                    accuracy = float(np.mean((out.data.cpu().numpy()-x_label.data.cpu().numpy())**2/(x_label.data.cpu().numpy()+1)))
+                    print('Epoch: ', epoch, '| train loss: %.4f' % p_loss.data.cpu().numpy(), '| test accuracy: %.2f' % accuracy)
+                    counter_per_epoch += print_per_sample
+
+            torch.cuda.empty_cache()        #empty useless variable
+
     def test_gru(self):
-        c_train_data,c_train_label = self._g_preprocess('train')                        # data.shape=(10000,100,16), label.shape=(10000,)
-        
+        g_train_data,g_train_label = self._g_preprocess('train')                        # data.shape=(10000,100,16), label.shape=(10000,)
+        self.gru = self._build_gru()
+        self._gru_fit(self.gru,g_train_data,g_train_label,64,80)
 
 def dataset_ndarry_pytorch(data,label,batch_size,shuffle):
     assert data.shape[0] == label.shape[0]
