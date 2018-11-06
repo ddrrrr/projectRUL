@@ -226,7 +226,7 @@ class CNN_GRU():
         model = nn.GRU(
                 input_size=self.feature_size,
                 hidden_size=1,
-                num_layers=2,
+                num_layers=5,
                 batch_first=True
                 )
         self.gru_optimizer = torch.optim.Adam(model.parameters(),lr=0.001)
@@ -336,14 +336,16 @@ class CNN_GRU():
                 self.cnn_optimizer.zero_grad()
                 loss.backward()
                 self.cnn_optimizer.step()
+                temp_acc = float(np.mean((out.data.cpu().numpy()-x_label.data.cpu().numpy())**2/(x_label.data.cpu().numpy()+1)))
                 if i == 0:
                     p_loss = loss
+                    p_acc = temp_acc
                 else:
                     p_loss += (loss-p_loss)/(i+1)
+                    p_acc += (temp_acc-p_acc)/(i+1)
 
                 if i*batch_size > counter_per_epoch:
-                    accuracy = float(np.mean((out.data.cpu().numpy()-x_label.data.cpu().numpy())**2/(x_label.data.cpu().numpy()+1)))
-                    print('Epoch: ', epoch, '| train loss: %.4f' % p_loss.data.cpu().numpy(), '| test accuracy: %.2f' % accuracy)
+                    print('Epoch: ', epoch, '| train loss: %.4f' % p_loss.data.cpu().numpy(), '| test accuracy: %.2f' % p_acc)
                     counter_per_epoch += print_per_sample
 
             torch.cuda.empty_cache()        #empty useless variable
@@ -380,19 +382,23 @@ class CNN_GRU():
     
         c_test_data,c_test_label = self._c_preprocess('test',False)
         c_test_data = self._normalize(c_test_data)
-        [predict_label,feature] = self._cnn_predict(self.cnn,c_test_data)
+        [predict_label,_] = self._cnn_predict(self.cnn,c_test_data)
+        acc = np.mean(np.square(predict_label-c_test_label)/(c_test_label+1))
 
         plt.subplot(2,1,1)
         plt.plot(c_test_label)
         plt.scatter([x for x in range(predict_label.shape[0])],predict_label,s=2)
+        plt.title(str(acc))
 
         c_test_data,c_test_label = self._c_preprocess('train',False)
         c_test_data = self._normalize(c_test_data)
-        [predict_label,feature] = self._cnn_predict(self.cnn,c_test_data)
+        [predict_label,_] = self._cnn_predict(self.cnn,c_test_data)
+        acc = np.mean(np.square(predict_label-c_test_label)/(c_test_label+1))
 
         plt.subplot(2,1,2)
         plt.plot(c_test_label)
         plt.scatter([x for x in range(predict_label.shape[0])],predict_label,s=2)
+        plt.title(str(acc))
         plt.show()
 
     def _gru_fit(self,model,data,label,batch_size,epochs):
@@ -454,4 +460,4 @@ def dataset_ndarry_pytorch(data,label,batch_size,shuffle):
 
 if __name__ == '__main__':
     process = CNN_GRU()
-    process.test_gru()
+    process.test_cnn()
