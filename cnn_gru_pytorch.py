@@ -277,7 +277,7 @@ class CNN_GRU():
             train_label = train_label[idx]
         return np.transpose(train_data,(0,2,1)),train_label[:,np.newaxis]
     
-    def _g_preprocess(self,select):
+    def _g_preprocess(self,model,select):
         if select == 'train':
             temp_data = self.dataset.get_value('data',condition={'bearing_name':self.train_bearings})
             temp_label = self.dataset.get_value('RUL',condition={'bearing_name':self.train_bearings})
@@ -287,15 +287,13 @@ class CNN_GRU():
         else:
             raise ValueError('wrong selection!')
 
-        self.cnn = torch.load('./model/cnn')
-
         r_temp_label = []
         r_temp_data = []
         for i,x in enumerate(temp_label):
             t_label = [y for y in range(x,x + temp_data[i].shape[0])]
             t_label.reverse()
             r_temp_label.append(np.array(t_label))
-            r_temp_data.append(self._cnn_predict(self.cnn,self._normalize(np.transpose(temp_data[i],(0,2,1))))[1])
+            r_temp_data.append(self._cnn_predict(model,self._normalize(np.transpose(temp_data[i],(0,2,1))))[1])
 
         r_data = []
         r_label = []
@@ -411,14 +409,18 @@ class CNN_GRU():
             for i,(x_data,x_label) in enumerate(data_loader):
                 x_data = x_data.type(torch.FloatTensor)
                 x_label = x_label.type(torch.FloatTensor)
+                h = torch.zeros(5,x_data.size()[0],1)
+                h = h.type(torch.FloatTensor)
                 if torch.cuda.is_available():
                     x_data = Variable(x_data).cuda()
                     x_label = Variable(x_label).cuda()
+                    h = Variable(h).cuda()
                 else:
                     x_data = Variable(x_data)
                     x_label = Variable(x_label)
+                    h = Variable(h)
                 # 向前传播
-                out = model(x_data)[0]
+                out = model(x_data,h)[0]
                 out = out[:,-1,:]
                 out = out.view(out.shape[0],)
                 loss = self.gru_loss_func(out, x_label)
@@ -439,7 +441,8 @@ class CNN_GRU():
             torch.cuda.empty_cache()        #empty useless variable
 
     def test_gru(self):
-        g_train_data,g_train_label = self._g_preprocess('train')                        # data.shape=(10000,100,16), label.shape=(10000,)
+        model = torch.load('./model/resnet')
+        g_train_data,g_train_label = self._g_preprocess(model,'train')                        # data.shape=(10000,100,16), label.shape=(10000,)
         self.gru = self._build_gru()
         self._gru_fit(self.gru,g_train_data,g_train_label,64,80)
 
@@ -461,4 +464,5 @@ def dataset_ndarry_pytorch(data,label,batch_size,shuffle):
 
 if __name__ == '__main__':
     process = CNN_GRU()
-    process.test_cnn()
+    # process.test_cnn()
+    process.test_gru()
