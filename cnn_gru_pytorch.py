@@ -243,10 +243,10 @@ class CNN_GRU():
 
     def _add_noise(self,data,snr=0):
         snr = 10**(snr/10.0)
-        for i in range(data.shape[0]):
-            xpower = np.sum(data[i,]**2)/np.size(data[i,])
+        for i in range(data.size()[0]):
+            xpower = torch.sum(data[i,]**2)/data[i,].numel()
             npower = xpower/snr
-            data[i,] += (np.random.randn(data[i,].size).reshape(data[i,].shape))*np.sqrt(npower)
+            data[i,] += torch.randn(size=data[i,].size())*torch.sqrt(npower)
         return data
 
     def _c_preprocess(self,select='train',is_random=True):
@@ -314,7 +314,7 @@ class CNN_GRU():
 
         return np.array(r_data),np.array(r_label)
 
-    def _cnn_fit(self,model,data,label,batch_size,epochs):
+    def _cnn_fit(self,model,data,label,batch_size,epochs,snr=-4):
         model.train()
         data_loader = dataset_ndarry_pytorch(data,label,batch_size,True)
         print_per_sample = 2000
@@ -323,6 +323,8 @@ class CNN_GRU():
             for i,(x_data,x_label) in enumerate(data_loader):
                 x_data = x_data.type(torch.FloatTensor)
                 x_label = x_label.type(torch.FloatTensor)
+                if snr != None:
+                    x_data = self._add_noise(x_data)
                 if torch.cuda.is_available():
                     x_data = Variable(x_data).cuda()
                     x_label = Variable(x_label).cuda()
@@ -373,7 +375,6 @@ class CNN_GRU():
     def test_cnn(self):
         c_train_data,c_train_label = self._c_preprocess()
         c_train_data = self._normalize(c_train_data)
-        c_train_data = self._add_noise(c_train_data,-4)
         self.cnn = self._build_cnn()
         self._cnn_fit(self.cnn,c_train_data,c_train_label,64,80)
 
