@@ -1,4 +1,5 @@
 # ignore these file
+.gitignore
 .vscode/*
 __pycache__/*
 data/*
