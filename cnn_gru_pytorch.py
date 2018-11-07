@@ -183,6 +183,18 @@ class CNN(nn.Module):
         output = self.out(x)
         return output, x    # return x for visualization
 
+class GRU(nn.Module):
+    def __init__(self, feature_size):
+        super(GRU, self).__init__()
+        self.gru_1 = nn.GRU(feature_size,32,2,batch_first=True)          # the input size should be the same with h in _gru_fit
+        # self.gru_2 = nn.GRU(32,1,1,batch_first=True)
+        self.linear = nn.Linear(32,1)
+    def forward(self,x,h):
+        x,h = self.gru_1(x,h)
+        # x,h = self.gru_2(x,h)
+        x = self.linear(x)
+        return x,h
+
 class Custom_loss(nn.Module):
     def __init__(self):
         super(Custom_loss, self).__init__()
@@ -200,7 +212,7 @@ class CNN_GRU():
     
     def _build_cnn(self):
         # model = CNN(self.feature_size)
-        model = ResNet(Bottleneck, [3, 4, 6, 3])
+        model = ResNet(Bottleneck, [3, 4, 23, 3])
 
         weight_p, bias_p = [],[]
         # for name, p in model.named_parameters():
@@ -223,12 +235,7 @@ class CNN_GRU():
         return model
 
     def _build_gru(self):
-        model = nn.GRU(
-                input_size=self.feature_size,
-                hidden_size=1,
-                num_layers=5,
-                batch_first=True
-                )
+        model = GRU(self.feature_size)
         self.gru_optimizer = torch.optim.Adam(model.parameters(),lr=0.001)
         self.gru_loss_func = nn.MSELoss()
         if torch.cuda.is_available():
@@ -308,7 +315,7 @@ class CNN_GRU():
             if r_t_data.shape[0] < 100:
                 r_t_data = np.append(np.zeros((100-r_t_data.shape[0],self.feature_size)),r_t_data,axis=0)
             r_data.append(r_t_data)
-            r_label.append(random_bearing_RUL[end_idx])
+            r_label.append(random_bearing_RUL[start_idx:end_idx])
 
         return np.array(r_data),np.array(r_label)
 
@@ -374,7 +381,7 @@ class CNN_GRU():
         c_train_data,c_train_label = self._c_preprocess()
         c_train_data = self._normalize(c_train_data)
         self.cnn = self._build_cnn()
-        self._cnn_fit(self.cnn,c_train_data,c_train_label,64,80)
+        self._cnn_fit(self.cnn,c_train_data,c_train_label,64,80,None)
 
         torch.save(self.cnn,'./model/cnn')
         self.cnn = torch.load('./model/cnn')
@@ -398,6 +405,7 @@ class CNN_GRU():
         plt.plot(c_test_label)
         plt.scatter([x for x in range(predict_label.shape[0])],predict_label,s=2)
         plt.title(str(acc))
+        plt.savefig('./model/temp.png',dip=900)
         plt.show()
 
     def _gru_fit(self,model,data,label,batch_size,epochs):
@@ -409,7 +417,7 @@ class CNN_GRU():
             for i,(x_data,x_label) in enumerate(data_loader):
                 x_data = x_data.type(torch.FloatTensor)
                 x_label = x_label.type(torch.FloatTensor)
-                h = torch.zeros(5,x_data.size()[0],1)
+                h = torch.zeros(2,x_data.size()[0],32)
                 h = h.type(torch.FloatTensor)
                 if torch.cuda.is_available():
                     x_data = Variable(x_data).cuda()
@@ -421,8 +429,8 @@ class CNN_GRU():
                     h = Variable(h)
                 # 向前传播
                 out = model(x_data,h)[0]
-                out = out[:,-1,:]
-                out = out.view(out.shape[0],)
+                # out = out[:,-1,:]
+                out = out.view(out.shape[0],-1)
                 loss = self.gru_loss_func(out, x_label)
                 # 向后传播
                 self.gru_optimizer.zero_grad()
@@ -444,7 +452,7 @@ class CNN_GRU():
         model = torch.load('./model/resnet')
         g_train_data,g_train_label = self._g_preprocess(model,'train')                        # data.shape=(10000,100,16), label.shape=(10000,)
         self.gru = self._build_gru()
-        self._gru_fit(self.gru,g_train_data,g_train_label,64,80)
+        self._gru_fit(self.gru,g_train_data,g_train_label,64,100)
 
         torch.save(self.gru,'./model/gru')
 
