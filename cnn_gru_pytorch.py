@@ -8,6 +8,7 @@ import torch
 from torch import nn, optim
 from torch.autograd import Variable
 from torch.utils.data import DataLoader
+from torch.nn.utils import weight_norm
 
 class BasicBlock(nn.Module):
     expansion = 1
@@ -188,12 +189,9 @@ class TCN(nn.Module):
                                         padding=(kernel_size-1) * dilation_size, dropout=dropout)]
 
         self.network = nn.Sequential(*layers)
-        self.linear = nn.Linear(num_channels[-1],1)
     def forward(self, x):
         x =  self.network(x)
-        feature = x[:,:,-1].contiguous().view(x.size(0),-1)
-        out = self.linear(feature)
-        return out,feature
+        return x
 
 class CNN(nn.Module):
     def __init__(self, feature_size):
@@ -305,6 +303,20 @@ class CNN_GRU():
             model = model.cuda()
         return model
 
+    def _build_tcn(self):
+        model = TCN(
+            num_input_channel=self.feature_size,
+            num_channels=[64,64,64,1],
+            num_block=[1,2,3,1],
+            kernel_size=3,
+            dropout=0.1
+        )
+        self.tcn_optimizer = torch.optim.Adam(model.parameters(),lr=0.001)
+        self.tcn_loss_func = nn.MSELoss()
+        if torch.cuda.is_available():
+            model = model.cuda()
+        return model
+
     def _normalize(self,data):
         r_data = np.zeros_like(data)
         for i in range(r_data.shape[0]):
@@ -347,7 +359,7 @@ class CNN_GRU():
             train_label = train_label[idx]
         return np.transpose(train_data,(0,2,1)),train_label[:,np.newaxis]
     
-    def _g_preprocess(self,model,select):
+    def _g_preprocess(self,model,select,is_random=True):
         if select == 'train':
             temp_data = self.dataset.get_value('data',condition={'bearing_name':self.train_bearings})
             temp_label = self.dataset.get_value('RUL',condition={'bearing_name':self.train_bearings})
@@ -360,25 +372,31 @@ class CNN_GRU():
         r_temp_label = []
         r_temp_data = []
         for i,x in enumerate(temp_label):
-            t_label = [y for y in range(x,x + temp_data[i].shape[0])]
+            t_label = [y for y in range(round(x),round(x + temp_data[i].shape[0]))]
             t_label.reverse()
             r_temp_label.append(np.array(t_label))
             r_temp_data.append(self._cnn_predict(model,self._normalize(np.transpose(temp_data[i],(0,2,1))))[1])
 
         r_data = []
         r_label = []
-        for i in range(10000):
-            bearing_idx = random.randint(0,len(r_temp_data)-1)
-            random_bearing = r_temp_data[bearing_idx]
-            random_bearing_RUL = r_temp_label[bearing_idx]
-            start_idx = random.randint(0,random_bearing.shape[0]-101)
-            # end_idx = start_idx + random.randint(50,100)
-            end_idx = start_idx + 100
-            r_t_data = random_bearing[start_idx:end_idx,]
-            if r_t_data.shape[0] < 100:
-                r_t_data = np.append(np.zeros((100-r_t_data.shape[0],self.feature_size)),r_t_data,axis=0)
-            r_data.append(r_t_data)
-            r_label.append(random_bearing_RUL[start_idx:end_idx])
+        if is_random:
+            for i in range(10000):
+                bearing_idx = random.randint(0,len(r_temp_data)-1)
+                random_bearing = r_temp_data[bearing_idx]
+                random_bearing_RUL = r_temp_label[bearing_idx]
+                start_idx = random.randint(0,random_bearing.shape[0]-101)
+                # end_idx = start_idx + random.randint(50,100)
+                end_idx = start_idx + 100
+                r_t_data = random_bearing[start_idx:end_idx,]
+                if r_t_data.shape[0] < 100:
+                    r_t_data = np.append(np.zeros((100-r_t_data.shape[0],self.feature_size)),r_t_data,axis=0)
+                r_data.append(r_t_data)
+                r_label.append(random_bearing_RUL[start_idx:end_idx])
+        else:
+            for i in range(len(r_temp_data)):
+                for j in range(len(r_temp_data[i])-100):
+                    r_data.append(r_temp_data[i][j:j+100,])
+                    r_label.append(r_temp_label[i][j:j+100])
 
         return np.array(r_data),np.array(r_label)
 
@@ -499,25 +517,123 @@ class CNN_GRU():
                 self.gru_optimizer.zero_grad()
                 loss.backward()
                 self.gru_optimizer.step()
+                temp_acc = torch.mean((out-x_label)**2/(x_label+1))
                 if i == 0:
                     p_loss = loss
+                    p_acc = temp_acc
                 else:
                     p_loss += (loss-p_loss)/(i+1)
+                    p_acc += (temp_acc-p_acc)/(i+1)
 
                 if i*batch_size > counter_per_epoch:
-                    accuracy = float(np.mean((out.data.cpu().numpy()-x_label.data.cpu().numpy())**2/(x_label.data.cpu().numpy()+1)))
-                    print('Epoch: ', epoch, '| train loss: %.4f' % p_loss.data.cpu().numpy(), '| test accuracy: %.2f' % accuracy)
+                    print('Epoch: ', epoch, '| train loss: %.4f' % p_loss.data.cpu().numpy(), '| test accuracy: %.2f' % p_acc.data.cpu().numpy())
                     counter_per_epoch += print_per_sample
 
             torch.cuda.empty_cache()        #empty useless variable
 
     def test_gru(self):
-        model = torch.load('./model/resnet')
+        model = torch.load('./model/resnet101')
         g_train_data,g_train_label = self._g_preprocess(model,'train')                        # data.shape=(10000,100,16), label.shape=(10000,)
         self.gru = self._build_gru()
         self._gru_fit(self.gru,g_train_data,g_train_label,64,100)
 
         torch.save(self.gru,'./model/gru')
+
+    def _tcn_fit(self,model,data,label,batch_size,epochs):
+        model.train()
+        data_loader = dataset_ndarry_pytorch(data,label,batch_size,True)
+        print_per_sample = 2000
+        for epoch in range(epochs):
+            counter_per_epoch = 0
+            for i,(x_data,x_label) in enumerate(data_loader):
+                x_data = x_data.type(torch.FloatTensor)
+                x_label = x_label.type(torch.FloatTensor)
+                if torch.cuda.is_available():
+                    x_data = Variable(x_data).cuda()
+                    x_label = Variable(x_label).cuda()
+                else:
+                    x_data = Variable(x_data)
+                    x_label = Variable(x_label)
+                # 向前传播
+                out = model(x_data)
+                out = out.view(out.shape[0],-1)
+                loss = self.tcn_loss_func(out, x_label)
+                # 向后传播
+                self.tcn_optimizer.zero_grad()
+                loss.backward()
+                self.tcn_optimizer.step()
+                temp_acc = torch.mean((out-x_label)**2/(x_label+1))
+                if i == 0:
+                    p_loss = loss
+                    p_acc = temp_acc
+                else:
+                    p_loss += (loss-p_loss)/(i+1)
+                    p_acc += (temp_acc-p_acc)/(i+1)
+
+                if i*batch_size > counter_per_epoch:
+                    print('Epoch: ', epoch, '| train loss: %.4f' % p_loss.data.cpu().numpy(), '| test accuracy: %.2f' % p_acc.data.cpu().numpy())
+                    counter_per_epoch += print_per_sample
+
+            torch.cuda.empty_cache()        #empty useless variable
+
+    def _tcn_predict(self,model,data):
+        batch_size = 32
+        predict_lable = np.array([])
+        model.eval()
+        prediction = []
+        for i in range(math.ceil(data.shape[0]/batch_size)):
+            x_data = data[i*batch_size:min(data.shape[0],(i+1)*batch_size),]
+            x_data = torch.from_numpy(x_data)
+            x_data = x_data.type(torch.FloatTensor)
+            x_data = Variable(x_data).cuda() if torch.cuda.is_available() else Variable(x_data)
+            x_prediction = model(x_data)
+            x_prediction = x_prediction if isinstance(x_prediction,list) else [x_prediction]
+            if len(prediction) == 0:
+                for i,x in enumerate(x_prediction):
+                    prediction.append(x_prediction[i].data.cpu().numpy())
+            else:
+                for i,x in enumerate(prediction):
+                    prediction[i] = np.append(x,x_prediction[i].data.cpu().numpy(),axis=0)
+            del x_prediction
+
+        return prediction
+
+    def test_tcn(self):
+        cnn_model = torch.load('./model/resnet101')
+        g_train_data,g_train_label = self._g_preprocess(cnn_model,'train')
+        g_train_data = np.transpose(g_train_data,(0,2,1))
+        self.tcn = self._build_tcn()
+        self._tcn_fit(self.tcn,g_train_data,g_train_label,64,100)
+        torch.save(self.tcn,'./model/tcn')
+
+        tcn_model = torch.load('./model/tcn')
+
+        g_data,g_label = self._g_preprocess(cnn_model,'test',False)
+        g_data = np.transpose(g_data,(0,2,1))
+        predict_label = self._tcn_predict(tcn_model,g_data)[0]
+        predict_label = predict_label.reshape(-1,100)
+        acc = np.mean(np.square(predict_label-g_label)/(g_label+1))
+        p_g_label = g_label[:,-1].reshape(-1,)
+        p_predict_label = predict_label[:,-1].reshape(-1,)
+        plt.subplot(2,1,1)
+        plt.plot(p_g_label)
+        plt.scatter([x for x in range(p_predict_label.shape[0])],p_predict_label,s=2)
+        plt.title(str(acc))
+
+        g_data,g_label = self._g_preprocess(cnn_model,'train',False)
+        g_data = np.transpose(g_data,(0,2,1))
+        predict_label = self._tcn_predict(tcn_model,g_data)[0]
+        predict_label = predict_label.reshape(-1,100)
+        acc = np.mean(np.square(predict_label-g_label)/(g_label+1))
+        p_g_label = g_label[:,-1].reshape(-1,)
+        p_predict_label = predict_label[:,-1].reshape(-1,)
+        plt.subplot(2,1,2)
+        plt.plot(p_g_label)
+        plt.scatter([x for x in range(p_predict_label.shape[0])],p_predict_label,s=2)
+        plt.title(str(acc))
+
+        plt.show()
+
 
 def dataset_ndarry_pytorch(data,label,batch_size,shuffle):
     assert data.shape[0] == label.shape[0]
@@ -536,4 +652,5 @@ def dataset_ndarry_pytorch(data,label,batch_size,shuffle):
 if __name__ == '__main__':
     process = CNN_GRU()
     # process.test_cnn()
-    process.test_gru()
+    # process.test_gru()
+    process.test_tcn()
