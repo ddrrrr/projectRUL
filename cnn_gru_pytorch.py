@@ -72,7 +72,7 @@ class ResNet(nn.Module):
         super(ResNet, self).__init__()
 
         m = OrderedDict()
-        m['conv1'] = nn.Conv1d(2, 64, kernel_size=64, stride=2, padding=31, bias=False)
+        m['conv1'] = nn.Conv1d(4, 64, kernel_size=6, stride=2, padding=2, bias=False)
         m['bn1'] = nn.BatchNorm1d(64)
         m['relu1'] = nn.ReLU(inplace=True)
         m['maxpool'] = nn.MaxPool1d(kernel_size=2, stride=2, padding=0)
@@ -83,7 +83,7 @@ class ResNet(nn.Module):
         self.layer3 = self._make_layer(block, 256, layers[2], stride=4)
         self.layer4 = self._make_layer(block, 256, layers[3], stride=4)
 
-        self.avgpool = nn.Sequential(nn.AvgPool1d(10))
+        self.avgpool = nn.Sequential(nn.AvgPool1d(5))
 
         self.group2 = nn.Sequential(
             OrderedDict([
@@ -323,6 +323,11 @@ class CNN_GRU():
             r_data[i,] = ((data[i]-np.min(data[i]))/(np.max(data[i])-np.min(data[i]))-0.5)*2
         return r_data
 
+    def _fft(self,data):
+        fft_data = np.fft.fft(data,axis=2)/data.shape[2]
+        r_fft_data = np.append(fft_data[:,:,0:int(data.shape[2]/2)].real,fft_data[:,:,0:int(data.shape[2]/2)].imag,axis=1)
+        return r_fft_data
+
     def _add_noise(self,data,snr=0):
         snr = 10**(snr/10.0)
         for i in range(data.size()[0]):
@@ -375,7 +380,7 @@ class CNN_GRU():
             t_label = [y for y in range(round(x),round(x + temp_data[i].shape[0]))]
             t_label.reverse()
             r_temp_label.append(np.array(t_label))
-            r_temp_data.append(self._cnn_predict(model,self._normalize(np.transpose(temp_data[i],(0,2,1))))[1])
+            r_temp_data.append(self._cnn_predict(model,self._fft(self._normalize(np.transpose(temp_data[i],(0,2,1)))))[1])
 
         r_data = []
         r_label = []
@@ -461,6 +466,7 @@ class CNN_GRU():
     def test_cnn(self):
         c_train_data,c_train_label = self._c_preprocess()
         c_train_data = self._normalize(c_train_data)
+        c_train_data = self._fft(c_train_data)
         self.cnn = self._build_cnn()
         self._cnn_fit(self.cnn,c_train_data,c_train_label,64,80,None)
 
@@ -469,6 +475,7 @@ class CNN_GRU():
     
         c_test_data,c_test_label = self._c_preprocess('test',False)
         c_test_data = self._normalize(c_test_data)
+        c_test_data = self._fft(c_test_data)
         [predict_label,_] = self._cnn_predict(self.cnn,c_test_data)
         acc = np.mean(np.square(predict_label-c_test_label)/(c_test_label+1))
 
@@ -479,6 +486,7 @@ class CNN_GRU():
 
         c_test_data,c_test_label = self._c_preprocess('train',False)
         c_test_data = self._normalize(c_test_data)
+        c_test_data = self._fft(c_test_data)
         [predict_label,_] = self._cnn_predict(self.cnn,c_test_data)
         acc = np.mean(np.square(predict_label-c_test_label)/(c_test_label+1))
 
@@ -599,14 +607,14 @@ class CNN_GRU():
         return prediction
 
     def test_tcn(self):
-        cnn_model = torch.load('./model/resnet101')
+        cnn_model = torch.load('./model/resnet101_with_fft')
         g_train_data,g_train_label = self._g_preprocess(cnn_model,'train')
         g_train_data = np.transpose(g_train_data,(0,2,1))
         self.tcn = self._build_tcn()
         self._tcn_fit(self.tcn,g_train_data,g_train_label,64,100)
-        torch.save(self.tcn,'./model/tcn')
+        torch.save(self.tcn,'./model/temp_tcn')
 
-        tcn_model = torch.load('./model/tcn')
+        tcn_model = torch.load('./model/temp_tcn')
 
         g_data,g_label = self._g_preprocess(cnn_model,'test',False)
         g_data = np.transpose(g_data,(0,2,1))
@@ -633,7 +641,6 @@ class CNN_GRU():
         plt.title(str(acc))
 
         plt.show()
-
 
 def dataset_ndarry_pytorch(data,label,batch_size,shuffle):
     assert data.shape[0] == label.shape[0]
