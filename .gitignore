@@ -12,3 +12,4 @@ usedataset.py
 model_resnet.py
 test2.py
 encoder.py
+gan.py
