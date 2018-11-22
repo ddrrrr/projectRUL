@@ -311,8 +311,21 @@ class CNN_GRU():
             kernel_size=3,
             dropout=0.1
         )
-        self.tcn_optimizer = torch.optim.Adam(model.parameters(),lr=0.001)
+        weight_p, bias_p = [],[]
+        for name, p in model.named_parameters():
+            if 'bias' in name:
+                bias_p += [p]
+            else:
+                weight_p += [p]
+            # 这里的model中每个参数的名字都是系统自动命名的，只要是权值都是带有weight，偏置都带有bias，
+            # 因此可以通过名字判断属性，这个和tensorflow不同，tensorflow是可以用户自己定义名字的，当然也会系统自己定义。
+        self.tcn_optimizer = torch.optim.Adam([
+                {'params': weight_p, 'weight_decay':1e-6},
+                {'params': bias_p, 'weight_decay':0}
+                ], lr=1e-3)
+        # self.tcn_optimizer = torch.optim.Adam(model.parameters(),lr=0.001)
         self.tcn_loss_func = nn.MSELoss()
+        # self.tcn_loss_func = Custom_loss()
         if torch.cuda.is_available():
             model = model.cuda()
         return model
@@ -320,7 +333,8 @@ class CNN_GRU():
     def _normalize(self,data):
         r_data = np.zeros_like(data)
         for i in range(r_data.shape[0]):
-            r_data[i,] = ((data[i]-np.min(data[i]))/(np.max(data[i])-np.min(data[i]))-0.5)*2
+            r_data[i,] = (data[i] - np.mean(data[i]))/max(abs(np.max(data[i])),abs(np.min(data[i])))
+            # r_data[i,] = ((data[i]-np.min(data[i]))/(np.max(data[i])-np.min(data[i]))-0.5)*2
         return r_data
 
     def _fft(self,data):
@@ -380,7 +394,7 @@ class CNN_GRU():
             t_label = [y for y in range(round(x),round(x + temp_data[i].shape[0]))]
             t_label.reverse()
             r_temp_label.append(np.array(t_label))
-            r_temp_data.append(self._cnn_predict(model,self._fft(self._normalize(np.transpose(temp_data[i],(0,2,1)))))[1])
+            r_temp_data.append(self._cnn_predict(model,self._normalize(self._fft(np.transpose(temp_data[i],(0,2,1)))))[1])
 
         r_data = []
         r_label = []
