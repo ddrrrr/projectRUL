@@ -4,6 +4,7 @@ Created on Mon Aug  6 14:53 2018
 
 @author: a273
 TODO
+    should class DataSet only arange, save and load?
 """
 
 import os
@@ -15,9 +16,15 @@ import numpy as np
 import pandas as pd
 
 class DataSet(object):
-    '''
-        index:list
-        dataset:list
+    '''This class is used to arrange dataset, collected and used by Lab 119 in HIT.
+        module numpy, pickle and pandas should be installed before used.
+        Attributes:
+            name: The name of dataset with str type. And this name is used to save and load the 
+                dataset with the file name as 'DataSet_' + name + '.pkl'
+            index: A list contained atrributes of the dataset, so that samples can be distinguished 
+                from each others by different values under same attributes.
+            save_path: A string described where to save or load this dataset, and defaulted as './data/'
+            dataset: A list contained samples and their attributes.
     '''
     def __init__(self,name='',index=[],save_path='./data/',dataset=[]):
         self.name = name
@@ -27,6 +34,15 @@ class DataSet(object):
 
     # inner function
     def _deal_condition(self,condition):
+        '''
+        get the index of samples whose attributes is in condition.
+
+        Args:
+            condition: A dict whose keys are the name of attributes and values are lists contained values owned by 
+                samples we need.
+        Return:
+            A bool list whether the sample need according to condition.
+        '''
         conforming_idx_all = []
         for k in condition.keys():
             value_attribute = self.get_value_attribute(k)
@@ -42,24 +58,60 @@ class DataSet(object):
         self.index = index
 
     def add_index(self,new_attribute,new_value=None):
+        '''
+        Add new attribute to dataset.
+        
+        Args:
+            new_attribute: The name of new attribute (a string).
+            new_value: A list contained values appended to each sample. If the length of new_value is 1,
+                then all samples will append the same new_value. Or the length of new_value should be the
+                same as the number of samples, then each sample will append the corresponding value. 
+                Otherwise, raise valueError.
+        Return:
+            None
+        '''
         self.index.append(new_attribute)
         if new_value == None:
             for x in self.dataset:
                 x.append(new_value)
         elif isinstance(new_value,list):
-            assert len(new_value) == len(self.dataset)
-            for i,x in enumerate(self.dataset):
-                x.append(new_value[i])
-        else:
-            raise TypeError
+            if len(new_value) == 1:
+                for i in range(len(self.dataset)):
+                    self.dataset[i].append(new_value[0])
+            elif len(new_value) == len(self.dataset):
+                for i in range(len(self.dataset)):
+                    self.dataset[i].append(new_value[i])
+            else:
+                raise TypeError
 
     def del_index(self,del_attribute):
-        idx = self.index.index(del_attribute)
-        for x in self.dataset:
-            del(x[idx])
-        self.index.remove(del_attribute)
+        '''
+        delete attribute and the corresponding values in each sample.
+        
+        Args:
+            del_attribute: The name of attribute (a string).
+        Return:
+            None
+        '''
+        try:
+            idx = self.index.index(del_attribute)
+            for x in self.dataset:
+                del(x[idx])
+            self.index.remove(del_attribute)
+        except ValueError:
+            raise ValueError
+            print('The given attribute does not exist in index, and the attributes of this dataset \
+                is ', self.index)
 
     def append(self,append_data):
+        '''
+        Append samples.
+        
+        Args:
+            append_data: A dict or a list that contain a sample, including data and attribute.
+        Return:
+            None
+        '''
         if isinstance(append_data,dict):
             if len(append_data.keys()) <= len(self.index):
                 append_data_list = []
@@ -80,6 +132,14 @@ class DataSet(object):
             raise TypeError('append_data should be dict or list')
 
     def delete(self,condition):
+        '''
+        delete samples.
+        
+        Args:
+            condition: A dict determines which samples should be delete.
+        Return:
+            None
+        '''
         conforming_idx = self._deal_condition(condition)
         for i,x in enumerate(self.dataset):
             if conforming_idx[i]:
@@ -87,20 +147,59 @@ class DataSet(object):
 
     # get information or values
     def get_value_attribute(self,attribute):
-        idx = self.index.index(attribute)
-        return [x[idx] for x in self.dataset]
+        '''
+        get values under the given attribute of each data
+        Args:
+            attribute: A str mapping the attribute of dataset.
+                Return error and all attribute of dataset if the given attribute does
+                not exist.
+        Return:
+            A list of values under the given attribute with the same order as samples in dataset.
+        '''
+        try:
+            idx = self.index.index(attribute)
+            return [x[idx] for x in self.dataset]
+        except ValueError:
+            raise ValueError
+            print('The given attribute does not exist in index, and the attributes of this dataset \
+                is ', self.index)
 
     def get_value(self,attribute,condition={}):
+        '''
+        get corresponding values.
+        
+        Args:
+            attribute: A string describes the values returned.
+            condition: A dict determines the values of which samples should be returned.
+        Return:
+            A list contrained values by given attribute and condition.
+        '''
         conforming_idx = self._deal_condition(condition)
         idx = self.index.index(attribute)
         return [x[idx] for i,x in enumerate(self.dataset) if conforming_idx[i]]
 
     def get_dataset(self,condition={}):
+        '''
+        get corresponding dataset.
+        
+        Args:
+            condition: A dict determines the values of which samples should be returned.
+        Return:
+            A DataSet contrained values by given condition.
+        '''
         conforming_idx = self._deal_condition(condition)
         return DataSet(name='temp',index=self.index,
                         dataset=[x for i,x in enumerate(self.dataset) if conforming_idx[i]])
 
     def get_random_choice(self):
+        '''
+        get a random sample.
+        
+        Args:
+            None
+        Return:
+            A dict like {Attribute_1:Values,...}.
+        '''
         r = {}
         data = random.choice(self.dataset)
         for i,k in enumerate(self.index):
@@ -108,6 +207,14 @@ class DataSet(object):
         return r
 
     def get_random_samples(self,n=1):
+        '''
+        get a random DataSet.
+        
+        Args:
+            None
+        Return:
+            A Dataset with same index but only one sample.
+        '''
         return DataSet(name='temp',index=self.index,dataset=random.sample(self.dataset,n))
     
     # value process
