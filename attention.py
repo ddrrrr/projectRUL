@@ -7,6 +7,7 @@ from dataset import DataSet
 '''
     TODO: 
     build seq2seq model
+    should be normalized?
 '''
 class Attention():
     def __init__(self):
@@ -22,7 +23,7 @@ class Attention():
         train_data,train_label = self._preprocess('train')
         
     
-    def _preprocess(self, select, is_random=True):
+    def _preprocess(self, select):
         if select == 'train':
             temp_data = self.dataset.get_value('data',condition={'bearing_name':self.train_bearings})
             temp_label = self.dataset.get_value('RUL',condition={'bearing_name':self.train_bearings})
@@ -32,19 +33,12 @@ class Attention():
         else:
             raise ValueError('wrong selection!')
 
-        new_temp_label = np.concatenate(tuple(np.arange(temp_data[i].shape[0])[::-1] + x \
-                                            for i,x in enumerate(temp_label)),axis=0)
-
-        new_temp_data = np.concatenate(tuple(x for x in temp_data),axis=0)
-        new_temp_data = new_temp_data.transpose(0,2,1)
-
-        time_feature = self._get_time_fea(new_temp_data)
-        if is_random:
-            idx = [i for i in range(time_feature.shape[0])]
-            random.shuffle(idx)
-            time_feature = time_feature[idx]
-            new_temp_label = new_temp_label[idx]
-        return time_feature, new_temp_label
+        for i,x in enumerate(temp_label):
+            temp_label[i] = np.arange(temp_data[i].shape[0])[::-1] + x
+        for i,x in enumerate(temp_data):
+            temp_data[i] = x.transpose(0,2,1)
+        time_feature = [self._get_time_fea(x) for x in temp_data]
+        return time_feature, temp_label
 
 
     def _fit(self, model, data, label):
