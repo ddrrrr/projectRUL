@@ -136,6 +136,7 @@ class RUL():
         for [data, label] in val_iter:
             # src, len_src = batch.src
             # trg, len_trg = batch.trg
+            data, label = torch.from_numpy(data), torch.from_numpy(label)
             data, label = data.type(torch.FloatTensor), label.type(torch.FloatTensor)
             data = Variable(data, volatile=True).cuda()
             label = Variable(label, volatile=True).cuda()
@@ -159,6 +160,7 @@ class RUL():
             # src, len_src = batch.src
             # trg, len_trg = batch.trg
             # src, trg = src.cuda(), trg.cuda()
+            data, label = torch.from_numpy(data), torch.from_numpy(label)
             data, label = data.type(torch.FloatTensor), label.type(torch.FloatTensor)
             data, label = Variable(data).cuda(), Variable(label).cuda()
             optimizer.zero_grad()
