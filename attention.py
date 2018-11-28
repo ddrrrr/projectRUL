@@ -48,7 +48,7 @@ class Attention(nn.Module):
         h = hidden.repeat(timestep, 1, 1).transpose(0, 1)
         encoder_outputs = encoder_outputs.transpose(0, 1)  # [B*T*H]
         attn_energies = self.score(h, encoder_outputs)
-        return F.relu(attn_energies, dim=1).unsqueeze(1)
+        return F.relu(attn_energies).unsqueeze(1)
 
     def score(self, hidden, encoder_outputs):
         # [B*T*2H]->[B*T*H]
@@ -68,8 +68,8 @@ class Decoder(nn.Module):
         self.output_size = output_size
         self.n_layers = n_layers
 
-        # self.embed = nn.Embedding(output_size, embed_size)
-        self.dropout = nn.Dropout(dropout, inplace=True)
+        # self.embed = nn.Embedding(output_size, hidden_size)
+        # self.dropout = nn.Dropout(dropout, inplace=True)
         self.attention = Attention(hidden_size)
         self.gru = nn.GRU(hidden_size + output_size, hidden_size,
                           n_layers, dropout=dropout)
@@ -78,8 +78,8 @@ class Decoder(nn.Module):
     def forward(self, input, last_hidden, encoder_outputs):
         # Get the embedding of the current input word (last output word)
         # embedded = self.embed(input).unsqueeze(0)  # (1,B,N)
-        embedded = input[-1,:,:]
-        embedded = self.dropout(embedded)
+        embedded = input.unsqueeze(0)
+        # embedded = self.dropout(embedded)
         # Calculate attention weights and apply to encoder outputs
         attn_weights = self.attention(last_hidden[-1], encoder_outputs)
         context = attn_weights.bmm(encoder_outputs.transpose(0, 1))  # (B,1,N)
@@ -108,14 +108,14 @@ class Seq2Seq(nn.Module):
 
         encoder_output, hidden = self.encoder(src)
         hidden = hidden[:self.decoder.n_layers]
-        output = Variable(trg.data[0, :])  # sos
+        output = Variable(trg.data[0,])  # sos
         for t in range(1, max_len):
             output, hidden, attn_weights = self.decoder(
                     output, hidden, encoder_output)
             outputs[t] = output
             is_teacher = random.random() < teacher_forcing_ratio
-            top1 = output.data.max(1)[1]
-            output = Variable(trg.data[t] if is_teacher else top1).cuda()
+            # top1 = output.data.max(1)[1]
+            output = Variable(trg.data[t,] if is_teacher else output).cuda()
         return outputs
 
 
@@ -123,7 +123,7 @@ class RUL():
     def __init__(self):
         self.hidden_size = 32
         self.epochs = 50
-        self.lr = 1e-4
+        self.lr = 1e-3
         self.dataset = DataSet.load_dataset(name='phm_data')
         self.train_bearings = ['Bearing1_1','Bearing1_2','Bearing2_1','Bearing2_2','Bearing3_1','Bearing3_2']
         self.test_bearings = ['Bearing1_3','Bearing1_4','Bearing1_5','Bearing1_6','Bearing1_7',
@@ -173,7 +173,7 @@ class RUL():
             clip_grad_norm(model.parameters(), grad_clip)
             optimizer.step()
             total_loss += loss.data[0]
-        print('[%d][loss:%5.2f]' % (e,total_loss))
+        print('[Epoch:%d][loss:%5.2f]' % (e,total_loss))
             # if b % 100 == 0 and b != 0:
             #     total_loss = total_loss / 100
             #     print("[%d][loss:%5.2f][pp:%5.2f]" %
@@ -189,15 +189,15 @@ class RUL():
 
         encoder = Encoder(self.feature_size,self.hidden_size,n_layers=2,dropout=0.5)
         decoder = Decoder(self.hidden_size,1,n_layers=1,dropout=0.5)
-        seq2seq = Seq2Seq(encoder,decoder)
+        seq2seq = Seq2Seq(encoder,decoder).cuda()
         optimizer = optim.Adam(seq2seq.parameters(), lr=self.lr)
 
-        best_val_loss = None
+        # best_val_loss = None
         for e in range(self.epochs):
             self._fit(e, seq2seq, optimizer, train_iter)
             val_loss = self._evaluate(seq2seq, val_iter)
-            print("[Epoch:%d] val_loss:%5.3f | val_pp:%5.2fS"
-                % (e, val_loss, math.exp(val_loss)))
+            print("[Epoch:%d][val_loss:%.3f] "
+                % (e, val_loss))
 
             # Save the model if the validation loss is the best we've seen so far.
         #     if not best_val_loss or val_loss < best_val_loss:
@@ -222,9 +222,13 @@ class RUL():
 
         for i,x in enumerate(temp_label):
             temp_label[i] = np.arange(temp_data[i].shape[0])[::-1] + x
+            temp_label[i] = temp_label[i][:,np.newaxis,np.newaxis]
         for i,x in enumerate(temp_data):
             temp_data[i] = x.transpose(0,2,1)
         time_feature = [self._get_time_fea(x) for x in temp_data]
+        # for i in range(len(time_feature)):
+        #     time_feature[i] = time_feature[i][-300:,:,:]
+        #     temp_label[i] = temp_label[i][-300:,]
         return time_feature, temp_label
 
     def _get_time_fea(self, data):
