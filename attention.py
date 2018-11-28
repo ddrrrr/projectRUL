@@ -3,6 +3,7 @@ import numpy as np
 from collections import OrderedDict
 import math
 import matplotlib.pyplot as plt 
+import pandas as pd 
 import torch
 from torch import nn, optim
 from torch.autograd import Variable
@@ -114,9 +115,9 @@ class Seq2Seq(nn.Module):
 
 class RUL():
     def __init__(self):
-        self.hidden_size = 16
+        self.hidden_size = 32
         self.epochs = 50
-        self.lr = 1e-3
+        self.lr = 1e-4
         self.dataset = DataSet.load_dataset(name='phm_data')
         self.train_bearings = ['Bearing1_1','Bearing1_2','Bearing2_1','Bearing2_2','Bearing3_1','Bearing3_2']
         self.test_bearings = ['Bearing1_3','Bearing1_4','Bearing1_5','Bearing1_6','Bearing1_7',
@@ -135,11 +136,20 @@ class RUL():
         seq2seq = Seq2Seq(encoder,decoder).cuda()
         optimizer = optim.Adam(seq2seq.parameters(), lr=self.lr)
 
+        log = {}
+        log['train_loss'] = []
+        log['val_loss'] = []
         for e in range(self.epochs):
             train_loss = self._fit(e, seq2seq, optimizer, train_iter)
             val_loss = self._evaluate(seq2seq, val_iter)
             print("[Epoch:%d][train_loss:%.3f][val_loss:%.3f] "
                 % (e, train_loss, val_loss))
+            log['train_loss'].append(float(train_loss))
+            log['val_loss'].append(float(val_loss))
+            pd.DataFrame(log).to_csv('./model/log.csv',index=False)
+            if float(val_loss) == min(log['val_loss']):
+                torch.save(seq2seq, './model/seq2seq')
+
             if e % 10 == 0:
                 self._plot_result(seq2seq, train_iter, val_iter)
         
