@@ -363,8 +363,84 @@ def make_phm_dataset():
 
     phm_dataset.save()
 
+def make_paderborn_dataset():
+    paderborn_dataset = DataSet(
+        name='paderborn_data',
+        index=[
+            'bearing_name',
+            'load',
+            'speed',
+            'fault_place',
+            'fault_cause',
+            'state',
+            'No',
+            'data'
+        ]
+    )
+    source_path = 'E:/cyh/data_sum/temp/德data/dataset/'
+    artificial_fault = ['KI01','KI03','KI05','KI07','KI08',
+                'KA01','KA03','KA05','KA06','KA07']
+    state = {
+        'K001':'>50',
+        'K002':19,
+        'K003':1,
+        'K004':5,
+        'K005':10,
+        'K006':16,
+        'KA01':'EMD',
+        'KA03':'Electric Engraver',
+        'KA05':'Electric Engraver',
+        'KA06':'Electric Engraver',
+        'KA07':'Drilling',
+        'KA08':'Drilling',
+        'KA09':'Drilling',
+        'KA04':'Pitting',
+        'KA15':'Plastic Deform',
+        'KA16':'Pitting',
+        'KA22':'Pitting',
+        'KA30':'Plastic Deform',
+        'KI01':'EMD',
+        'KI03':'Electric Engraver',
+        'KI05':'Electric Engraver',
+        'KI07':'Electric Engraver',
+        'KI08':'Electric Engraver',
+        'KI04':['Pitting','Plastic Deform'],
+        'KI14':['Pitting','Plastic Deform'],
+        'KI16':'Pitting',
+        'KI17':'Pitting',
+        'KI18':'Pitting',
+        'KI21':'Pitting',
+        'KB23':'Pitting',
+        'KB24':'Pitting',
+        'KB27':'Plastic Deform'
+    }
+    file_names = os.listdir(source_path)
+    file_names.sort()
+    for file_name in file_names:
+        temp_data = sio.loadmat(source_path + file_name)
+        temp_data = temp_data[file_name.replace('.mat','')]
+        temp_data = temp_data['Y']
+        temp_data = temp_data[0][0][0][6][2][0]
+        temp_fault_cause = 'artificial' if file_name[12:16] in artificial_fault \
+                                        else 'real'
+        temp_append_sample = [
+            file_name,
+            file_name[4:11],
+            file_name[0:3],
+            file_name[12:16],
+            temp_fault_cause,
+            state[file_name[12:16]],
+            file_name[17:],
+            temp_data
+        ]
+        paderborn_dataset.append(temp_append_sample)
+        print(file_name,'has been appended.')
+
+    paderborn_dataset.save()
+
 if __name__ == '__main__':
     # make_phm_dataset()
-    dataset = DataSet.load_dataset('phm_data')
-    dataset._save_info()
+    # dataset = DataSet.load_dataset('phm_data')
+    # dataset._save_info()
+    make_paderborn_dataset()
     print('1')
