@@ -90,12 +90,13 @@ class Decoder(nn.Module):
 
 
 class Seq2Seq(nn.Module):
-    def __init__(self, encoder, decoder):
+    def __init__(self, encoder, decoder, teacher_forcing_ratio=0.5):
         super(Seq2Seq, self).__init__()
         self.encoder = encoder
         self.decoder = decoder
+        self.teacher_forcing_ratio = teacher_forcing_ratio
 
-    def forward(self, src, trg, teacher_forcing_ratio=0.5):
+    def forward(self, src, trg, teacher_forcing_ratio=None):
         batch_size = src.size(1)
         max_len = trg.size(0)
         vocab_size = self.decoder.output_size
@@ -108,6 +109,8 @@ class Seq2Seq(nn.Module):
             output, hidden, attn_weights = self.decoder(
                     output, hidden, encoder_output)
             outputs[t] = output
+            if teacher_forcing_ratio == None:
+                teacher_forcing_ratio = self.teacher_forcing_ratio
             is_teacher = random.random() < teacher_forcing_ratio
             output = Variable(trg.data[t,] if is_teacher else output).cuda()
         return outputs
@@ -116,8 +119,9 @@ class Seq2Seq(nn.Module):
 class RUL():
     def __init__(self):
         self.hidden_size = 32
-        self.epochs = 50
-        self.lr = 1e-4
+        self.epochs = 100
+        self.lr = 5e-4
+        self.gama = 0.95
         self.dataset = DataSet.load_dataset(name='phm_data')
         self.train_bearings = ['Bearing1_1','Bearing1_2','Bearing2_1','Bearing2_2','Bearing3_1','Bearing3_2']
         self.test_bearings = ['Bearing1_3','Bearing1_4','Bearing1_5','Bearing1_6','Bearing1_7',
@@ -134,6 +138,7 @@ class RUL():
         encoder = Encoder(self.feature_size,self.hidden_size,n_layers=2,dropout=0.5)
         decoder = Decoder(self.hidden_size,1,n_layers=1)
         seq2seq = Seq2Seq(encoder,decoder).cuda()
+        # seq2seq = torch.load('./model/seq2seq')
         optimizer = optim.Adam(seq2seq.parameters(), lr=self.lr)
 
         log = {}
@@ -142,30 +147,41 @@ class RUL():
         for e in range(self.epochs):
             train_loss = self._fit(e, seq2seq, optimizer, train_iter)
             val_loss = self._evaluate(seq2seq, val_iter)
-            print("[Epoch:%d][train_loss:%.3f][val_loss:%.3f] "
+            print("[Epoch:%d][train_loss:%.4e][val_loss:%.4e] "
                 % (e, train_loss, val_loss))
             log['train_loss'].append(float(train_loss))
             log['val_loss'].append(float(val_loss))
             pd.DataFrame(log).to_csv('./model/log.csv',index=False)
             if float(val_loss) == min(log['val_loss']):
                 torch.save(seq2seq, './model/seq2seq')
+            torch.save(seq2seq, './model/newest_seq2seq')
+            if float(train_loss) <= 1e-3:
+                seq2seq.teacher_forcing_ratio *= self.gama
+                
 
             if e % 10 == 0:
                 self._plot_result(seq2seq, train_iter, val_iter)
+
+    def test(self):
+        train_data,train_label = self._preprocess('train')
+        train_iter = [[train_data[i],train_label[i]] for i in range(len(train_data))]
+        test_data,test_label = self._preprocess('test')
+        val_iter = [[test_data[i],test_label[i]] for i in range(len(test_data))]
+
+        seq2seq = torch.load('./model/seq2seq')
+        self._plot_result(seq2seq, train_iter, val_iter)
         
     def _evaluate(self, model, val_iter):
         model.eval()
-        total_loss = 0
-        for [data, label] in val_iter:
-            with torch.no_grad():
-                data, label = torch.from_numpy(data), torch.from_numpy(label)
-                data, label = data.type(torch.FloatTensor), label.type(torch.FloatTensor)
-                data = Variable(data).cuda()
-                label = Variable(label).cuda()
-                output = model(data, label, teacher_forcing_ratio=0.0)
-            loss = F.mse_loss(output,label)                    
-            total_loss += loss.data
-        return total_loss / len(val_iter)
+        [data, label] = random.choice(val_iter)
+        with torch.no_grad():
+            data, label = torch.from_numpy(data), torch.from_numpy(label)
+            data, label = data.type(torch.FloatTensor), label.type(torch.FloatTensor)
+            data = Variable(data).cuda()
+            label = Variable(label).cuda()
+            output = model(data, label, teacher_forcing_ratio=0.0)
+        loss = F.mse_loss(output,label)
+        return loss.data
 
 
     def _fit(self, e, model, optimizer, train_iter, grad_clip=10.0):
@@ -289,3 +305,4 @@ class RUL():
 if __name__ == '__main__':
     process = RUL()
     process.train()
+    # process.test()
