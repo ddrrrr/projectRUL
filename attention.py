@@ -118,10 +118,10 @@ class Seq2Seq(nn.Module):
 
 class RUL():
     def __init__(self):
-        self.hidden_size = 32
-        self.epochs = 100
-        self.lr = 5e-4
-        self.gama = 0.95
+        self.hidden_size = 64
+        self.epochs = 200
+        self.lr = 1e-3
+        self.gama = 0.8
         self.dataset = DataSet.load_dataset(name='phm_data')
         self.train_bearings = ['Bearing1_1','Bearing1_2','Bearing2_1','Bearing2_2','Bearing3_1','Bearing3_2']
         self.test_bearings = ['Bearing1_3','Bearing1_4','Bearing1_5','Bearing1_6','Bearing1_7',
@@ -136,30 +136,42 @@ class RUL():
         val_iter = [[test_data[i],test_label[i]] for i in range(len(test_data))]
 
         encoder = Encoder(self.feature_size,self.hidden_size,n_layers=2,dropout=0.5)
-        decoder = Decoder(self.hidden_size,1,n_layers=1)
+        decoder = Decoder(self.hidden_size,1,n_layers=2)
         seq2seq = Seq2Seq(encoder,decoder).cuda()
-        # seq2seq = torch.load('./model/seq2seq')
+        # seq2seq = torch.load('./model/newest_seq2seq')
+        seq2seq.teacher_forcing_ratio = 0.5
         optimizer = optim.Adam(seq2seq.parameters(), lr=self.lr)
 
-        log = {}
+        log = OrderedDict()
         log['train_loss'] = []
         log['val_loss'] = []
-        for e in range(self.epochs):
+        log['test_loss'] = []
+        log['teacher_ratio'] = []
+        count = 0
+        for e in range(1, self.epochs+1):
             train_loss = self._fit(e, seq2seq, optimizer, train_iter)
-            val_loss = self._evaluate(seq2seq, val_iter)
-            print("[Epoch:%d][train_loss:%.4e][val_loss:%.4e] "
-                % (e, train_loss, val_loss))
+            val_loss = self._evaluate(seq2seq, train_iter)
+            test_loss = self._evaluate(seq2seq, val_iter)
+            print("[Epoch:%d][train_loss:%.4e][val_loss:%.4e][test_loss:%.4e][teacher_ratio:%.4f] "
+                % (e, train_loss, val_loss, test_loss, seq2seq.teacher_forcing_ratio))
             log['train_loss'].append(float(train_loss))
             log['val_loss'].append(float(val_loss))
+            log['test_loss'].append(float(test_loss))
+            log['teacher_ratio'].append(seq2seq.teacher_forcing_ratio)
             pd.DataFrame(log).to_csv('./model/log.csv',index=False)
             if float(val_loss) == min(log['val_loss']):
                 torch.save(seq2seq, './model/seq2seq')
             torch.save(seq2seq, './model/newest_seq2seq')
-            if float(train_loss) <= 1e-3:
+            if float(train_loss) <= float(val_loss)*0.15:
+                count += 1
+            else:
+                count = 0
+            if count >= 3:
                 seq2seq.teacher_forcing_ratio *= self.gama
+                count -= 1
                 
 
-            if e % 10 == 0:
+            if e % 20 == 0:
                 self._plot_result(seq2seq, train_iter, val_iter)
 
     def test(self):
@@ -168,7 +180,7 @@ class RUL():
         test_data,test_label = self._preprocess('test')
         val_iter = [[test_data[i],test_label[i]] for i in range(len(test_data))]
 
-        seq2seq = torch.load('./model/seq2seq')
+        seq2seq = torch.load('./model/newest_seq2seq')
         self._plot_result(seq2seq, train_iter, val_iter)
         
     def _evaluate(self, model, val_iter):
@@ -244,6 +256,7 @@ class RUL():
 
     
     def _preprocess(self, select):
+        max_len = 800
         if select == 'train':
             temp_data = self.dataset.get_value('data',condition={'bearing_name':self.train_bearings})
             temp_label = self.dataset.get_value('RUL',condition={'bearing_name':self.train_bearings})
@@ -260,6 +273,11 @@ class RUL():
         for i,x in enumerate(temp_data):
             temp_data[i] = x.transpose(0,2,1)
         time_feature = [self._get_time_fea(x) for x in temp_data]
+        # only chose the last max_len part of feature
+        # for i in range(len(time_feature)):
+        #     if time_feature[i].shape[0] > max_len:
+        #         time_feature[i] = time_feature[i][-max_len:,]
+        #         temp_label[i] = temp_label[i][-max_len:,]
         return time_feature, temp_label
 
     def _get_time_fea(self, data):
@@ -304,5 +322,5 @@ class RUL():
 
 if __name__ == '__main__':
     process = RUL()
-    process.train()
-    # process.test()
+    # process.train()
+    process.test()
