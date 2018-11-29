@@ -14,6 +14,7 @@ import scipy.io as sio
 import pickle as pickle
 import numpy as np
 import pandas as pd
+from collections import OrderedDict
 
 class DataSet(object):
     '''This class is used to arrange dataset, collected and used by Lab 119 in HIT.
@@ -257,13 +258,50 @@ class DataSet(object):
         self.dataset = [x for i,x in enumerate(self.dataset) if conforming_idx[i]]
 
     def save(self):
+        '''
+        Save this DataSet as .pkl file.
+        
+        Args:
+            None
+        Return:
+            None
+        '''
         assert self.name != ''
         assert self.save_path != ''
         pickle.dump(self, open(self.save_path + 'DataSet_' +
                                      self.name + '.pkl', 'wb'), True)
+        self._save_info()
         print('dataset ', self.name, ' has benn saved\n')
 
+    def _save_info(self):
+        '''
+        Save this DataSet' information as .csv file in the save_path.
+        
+        Args:
+            None
+        Return:
+            None
+        '''
+        assert self.name != ''
+        assert self.save_path != ''
+        info = OrderedDict()
+        for attr in self.index:
+            info[attr] = self.get_value_attribute(attr)
+            if isinstance(info[attr][0],np.ndarray) and len(info[attr][0])>1:
+                for i,x in enumerate(info[attr]):
+                    info[attr][i] = x.shape
+
+        pd.DataFrame(info).to_csv(self.save_path + 'DataSet_' + self.name + 'info.csv',index=False)
+
     def load(self,name=''):
+        '''
+        Load this DataSet with name and path known, which should be given when initialize DataSet class.
+        
+        Args:
+            name: The name of DataSet.
+        Return:
+            None
+        '''
         if name != '':
             self.name = name
         assert self.name != ''
@@ -278,6 +316,14 @@ class DataSet(object):
 
     @staticmethod
     def load_dataset(name):
+        '''
+        Load this DataSet with name and default path './data/'.
+        
+        Args:
+            name: The name of DataSet.
+        Return:
+            DataSet
+        '''
         save_path = './data/'
         full_name = save_path + 'DataSet_' + name + '.pkl'
         load_class = pickle.load(open(full_name,'rb'))
@@ -320,4 +366,5 @@ def make_phm_dataset():
 if __name__ == '__main__':
     # make_phm_dataset()
     dataset = DataSet.load_dataset('phm_data')
+    dataset._save_info()
     print('1')
