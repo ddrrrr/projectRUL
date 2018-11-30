@@ -118,7 +118,7 @@ class Seq2Seq(nn.Module):
 
 class RUL():
     def __init__(self):
-        self.hidden_size = 64
+        self.hidden_size = 128
         self.epochs = 200
         self.lr = 1e-3
         self.gama = 0.8
@@ -138,8 +138,8 @@ class RUL():
         encoder = Encoder(self.feature_size,self.hidden_size,n_layers=2,dropout=0.5)
         decoder = Decoder(self.hidden_size,1,n_layers=2)
         seq2seq = Seq2Seq(encoder,decoder).cuda()
-        # seq2seq = torch.load('./model/newest_seq2seq')
-        seq2seq.teacher_forcing_ratio = 0.5
+        seq2seq = torch.load('./model/500maxlen_t003_newest_seq2seq')
+        seq2seq.teacher_forcing_ratio = 0.005
         optimizer = optim.Adam(seq2seq.parameters(), lr=self.lr)
 
         log = OrderedDict()
@@ -162,7 +162,7 @@ class RUL():
             if float(val_loss) == min(log['val_loss']):
                 torch.save(seq2seq, './model/seq2seq')
             torch.save(seq2seq, './model/newest_seq2seq')
-            if float(train_loss) <= float(val_loss)*0.15:
+            if float(train_loss) <= float(val_loss)*0.2:
                 count += 1
             else:
                 count = 0
@@ -171,8 +171,8 @@ class RUL():
                 count -= 1
                 
 
-            if e % 20 == 0:
-                self._plot_result(seq2seq, train_iter, val_iter)
+            # if e % 20 == 0:
+            #     self._plot_result(seq2seq, train_iter, val_iter)
 
     def test(self):
         train_data,train_label = self._preprocess('train')
@@ -180,14 +180,14 @@ class RUL():
         test_data,test_label = self._preprocess('test')
         val_iter = [[test_data[i],test_label[i]] for i in range(len(test_data))]
 
-        seq2seq = torch.load('./model/newest_seq2seq')
+        seq2seq = torch.load('./model/seq2seq')
         self._plot_result(seq2seq, train_iter, val_iter)
         
     def _evaluate(self, model, val_iter):
         model.eval()
         [data, label] = random.choice(val_iter)
         with torch.no_grad():
-            data, label = torch.from_numpy(data), torch.from_numpy(label)
+            data, label = torch.from_numpy(data.copy()), torch.from_numpy(label.copy())
             data, label = data.type(torch.FloatTensor), label.type(torch.FloatTensor)
             data = Variable(data).cuda()
             label = Variable(label).cuda()
@@ -201,7 +201,7 @@ class RUL():
         total_loss = 0
         random.shuffle(train_iter)
         for [data, label] in train_iter:
-            data, label = torch.from_numpy(data), torch.from_numpy(label)
+            data, label = torch.from_numpy(data.copy()), torch.from_numpy(label.copy())
             data, label = data.type(torch.FloatTensor), label.type(torch.FloatTensor)
             data, label = Variable(data).cuda(), Variable(label).cuda()
             optimizer.zero_grad()
@@ -211,6 +211,7 @@ class RUL():
             clip_grad_norm_(model.parameters(), grad_clip)
             optimizer.step()
             total_loss += loss.data
+            torch.cuda.empty_cache()        #empty useless variable
         return total_loss / len(train_iter)
 
 
@@ -221,7 +222,7 @@ class RUL():
         outputs = []
         with torch.no_grad():
             for [data, label] in train_iter:
-                data, label = torch.from_numpy(data), torch.from_numpy(label)
+                data, label = torch.from_numpy(data.copy()), torch.from_numpy(label.copy())
                 data, label = data.type(torch.FloatTensor), label.type(torch.FloatTensor)
                 data = Variable(data).cuda()
                 label = Variable(label).cuda()
@@ -239,7 +240,7 @@ class RUL():
         outputs = []
         with torch.no_grad():
             for [data, label] in val_iter:
-                data, label = torch.from_numpy(data), torch.from_numpy(label)
+                data, label = torch.from_numpy(data.copy()), torch.from_numpy(label.copy())
                 data, label = data.type(torch.FloatTensor), label.type(torch.FloatTensor)
                 data = Variable(data).cuda()
                 label = Variable(label).cuda()
@@ -256,7 +257,7 @@ class RUL():
 
     
     def _preprocess(self, select):
-        max_len = 800
+        max_len = 500
         if select == 'train':
             temp_data = self.dataset.get_value('data',condition={'bearing_name':self.train_bearings})
             temp_label = self.dataset.get_value('RUL',condition={'bearing_name':self.train_bearings})
@@ -273,12 +274,25 @@ class RUL():
         for i,x in enumerate(temp_data):
             temp_data[i] = x.transpose(0,2,1)
         time_feature = [self._get_time_fea(x) for x in temp_data]
-        # only chose the last max_len part of feature
-        # for i in range(len(time_feature)):
-        #     if time_feature[i].shape[0] > max_len:
-        #         time_feature[i] = time_feature[i][-max_len:,]
-        #         temp_label[i] = temp_label[i][-max_len:,]
-        return time_feature, temp_label
+        # return time_feature, temp_label
+
+        # reverse
+        for i in range(len(time_feature)):
+            time_feature[i] = time_feature[i][::-1,]
+            temp_label[i] = temp_label[i][::-1,]
+        # cut samples with max_len
+        r_time_feature, r_label = [], []
+        for i in range(len(time_feature)):
+            if time_feature[i].shape[0] > max_len:
+                for j in range(time_feature[i].shape[0] // max_len):
+                    r_time_feature.append(time_feature[i][j*max_len:(j+1)*max_len,])
+                    r_label.append(temp_label[i][j*max_len:(j+1)*max_len,])
+                r_time_feature.append(time_feature[i][-max_len:,])
+                r_label.append(temp_label[i][-max_len:,])
+            else:
+                r_time_feature.append(time_feature[i])
+                r_label.append(temp_label[i])
+        return r_time_feature, r_label
 
     def _get_time_fea(self, data):
         fea_dict = OrderedDict()
@@ -313,10 +327,12 @@ class RUL():
 
     def _normalize(self, data, dim=None):
         if dim == None:
-            r_data = (data - np.min(data)) / (np.max(data) - np.min(data))
+            mmrange = 10.**np.ceil(np.log10(np.max(data) - np.min(data)))
+            r_data = (data - np.min(data)) / mmrange
         else:
+            mmrange = 10.**np.ceil(np.log10(np.max(data,axis=dim,keepdims=True) - np.min(data,axis=dim,keepdims=True)))
             r_data = (data - np.min(data,axis=dim,keepdims=True).repeat(data.shape[dim],axis=dim)) \
-                / (np.max(data,axis=dim,keepdims=True) - np.min(data,axis=dim,keepdims=True)).repeat(data.shape[dim],axis=dim)
+                / (mmrange).repeat(data.shape[dim],axis=dim)
         return r_data
 
 
