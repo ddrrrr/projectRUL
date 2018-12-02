@@ -290,6 +290,9 @@ class DataSet(object):
             if isinstance(info[attr][0],np.ndarray) and len(info[attr][0])>1:
                 for i,x in enumerate(info[attr]):
                     info[attr][i] = x.shape
+            if not isinstance(info[attr][0],str) and len(info[attr][0]) > 2:
+                for i,x in enumerate(info[attr]):
+                    info[attr][i] = len(x)
 
         pd.DataFrame(info).to_csv(self.save_path + 'DataSet_' + self.name + 'info.csv',index=False)
 
@@ -438,9 +441,56 @@ def make_paderborn_dataset():
 
     paderborn_dataset.save()
 
+def make_ims_dataset():
+    fault_bearing = {'1st_test':OrderedDict({4:'3_x',5:'3_y',6:'4_x',7:'4_y'}), '2nd_test':[0], '4th_test':[2]}
+    ims_dataset = DataSet(name='ims_data', index=['set_No','bearing_No','record_time','data'])
+    source_path = 'E:/cyh/data_sum/temp/IMS data/'
+
+    for dir_name in fault_bearing.keys():
+        # if isinstance(fault_bearing[dir_name],dict):
+        #     all_samples = []
+        #     for k in fault_bearing[dir_name].keys():
+        #         all_samples.append([dir_name, fault_bearing[dir_name][k], [], []])
+        if isinstance(fault_bearing[dir_name], dict):
+            channels = list(fault_bearing[dir_name].keys())
+        elif isinstance(fault_bearing[dir_name], list):
+            channels = fault_bearing[dir_name]
+        record_time = []
+        record_data = np.array([])
+
+        names = os.listdir(source_path + dir_name + '/')
+        names.sort()
+        for name in names:
+            print(name)
+            record_time.append(name.replace('.txt',''))
+            temp_data = np.loadtxt(source_path + dir_name + '/' + name)
+            if record_data.size == 0:
+                record_data = temp_data[:,channels][np.newaxis,:,:]
+            else:
+                record_data = np.append(record_data, temp_data[:,channels][np.newaxis,:,:], axis=0)
+        
+        if isinstance(fault_bearing[dir_name], dict):
+            append_samples = []
+            for i,k in enumerate(fault_bearing[dir_name].keys()):
+                append_samples.append([dir_name, fault_bearing[dir_name][k], record_time, record_data[:,:,i]])
+        elif isinstance(fault_bearing[dir_name], list):
+            append_samples = []
+            for i,x in enumerate(fault_bearing[dir_name]):
+                append_samples.append([dir_name, str(x), record_time, record_data[:,:,i]])
+
+        for sample in append_samples:
+            ims_dataset.append(sample)
+
+    ims_dataset.save()
+
+            
+
+
 if __name__ == '__main__':
     # make_phm_dataset()
     # dataset = DataSet.load_dataset('phm_data')
     # dataset._save_info()
-    make_paderborn_dataset()
+    # make_paderborn_dataset()
+    # make_ims_dataset()
+    dataset = DataSet.load_dataset('ims_data')
     print('1')
