@@ -23,11 +23,12 @@ class Encoder(nn.Module):
         super(Encoder, self).__init__()
         self.input_size = input_size
         self.hidden_size = hidden_size
-        self.cnn_kernel_size = 8
+        self.cnn_kernel_size = 64
         self.cnn_strides = 5   # when chang 10
         self.cnn = nn.Sequential(
             nn.Conv1d(self.input_size, 64, self.cnn_kernel_size, self.cnn_strides),
-            nn.ReLU()
+            # nn.ReLU()
+            nn.PReLU()
             )
         self.gru = nn.GRU(64, hidden_size, n_layers,
                           dropout=dropout, bidirectional=True)
@@ -363,5 +364,5 @@ class RUL():
 
 if __name__ == '__main__':
     process = RUL()
-    # process.train()
+    process.train()
     process.test()
