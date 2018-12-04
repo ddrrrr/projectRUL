@@ -23,10 +23,21 @@ class Encoder(nn.Module):
         super(Encoder, self).__init__()
         self.input_size = input_size
         self.hidden_size = hidden_size
-        self.gru = nn.GRU(input_size, hidden_size, n_layers,
+        self.cnn_kernel_size = 8
+        self.cnn_strides = 5   # when chang 10
+        self.cnn = nn.Sequential(
+            nn.Conv1d(self.input_size, 64, self.cnn_kernel_size, self.cnn_strides),
+            nn.ReLU()
+            )
+        self.gru = nn.GRU(64, hidden_size, n_layers,
                           dropout=dropout, bidirectional=True)
 
     def forward(self, x, hidden=None):
+        x = x.permute(1,2,0)  # [B*N*T]
+        padding = self.cnn_kernel_size - x.size(2) % self.cnn_strides
+        x = F.pad(x, (0,padding))
+        x = self.cnn(x)
+        x = x.permute(2,0,1).contiguous()  # [T*B*N]
         outputs, hidden = self.gru(x, hidden)
         outputs = (outputs[:, :, :self.hidden_size] +
                    outputs[:, :, self.hidden_size:])
@@ -119,9 +130,9 @@ class Seq2Seq(nn.Module):
 class RUL():
     def __init__(self):
         self.hidden_size = 128
-        self.epochs = 200
-        self.lr = 1e-3
-        self.gama = 0.8
+        self.epochs = 500
+        self.lr = 5e-5
+        self.gama = 0.7
         self.dataset = DataSet.load_dataset(name='phm_data')
         self.train_bearings = ['Bearing1_1','Bearing1_2','Bearing2_1','Bearing2_2','Bearing3_1','Bearing3_2']
         self.test_bearings = ['Bearing1_3','Bearing1_4','Bearing1_5','Bearing1_6','Bearing1_7',
@@ -138,8 +149,8 @@ class RUL():
         encoder = Encoder(self.feature_size,self.hidden_size,n_layers=2,dropout=0.5)
         decoder = Decoder(self.hidden_size,1,n_layers=2)
         seq2seq = Seq2Seq(encoder,decoder).cuda()
-        seq2seq = torch.load('./model/500maxlen_t003_newest_seq2seq')
-        seq2seq.teacher_forcing_ratio = 0.005
+        # seq2seq = torch.load('./model/newest_seq2seq')
+        seq2seq.teacher_forcing_ratio = 0.008
         optimizer = optim.Adam(seq2seq.parameters(), lr=self.lr)
 
         log = OrderedDict()
@@ -148,6 +159,7 @@ class RUL():
         log['test_loss'] = []
         log['teacher_ratio'] = []
         count = 0
+        count2 = 0
         for e in range(1, self.epochs+1):
             train_loss = self._fit(e, seq2seq, optimizer, train_iter)
             val_loss = self._evaluate(seq2seq, train_iter)
@@ -162,13 +174,16 @@ class RUL():
             if float(val_loss) == min(log['val_loss']):
                 torch.save(seq2seq, './model/seq2seq')
             torch.save(seq2seq, './model/newest_seq2seq')
+
+            count2 += 1
             if float(train_loss) <= float(val_loss)*0.2:
                 count += 1
             else:
                 count = 0
-            if count >= 3:
+            if count >= 3 or count2 >= 150:
                 seq2seq.teacher_forcing_ratio *= self.gama
                 count -= 1
+                count2 = 0
                 
 
             # if e % 20 == 0:
@@ -180,7 +195,7 @@ class RUL():
         test_data,test_label = self._preprocess('test')
         val_iter = [[test_data[i],test_label[i]] for i in range(len(test_data))]
 
-        seq2seq = torch.load('./model/seq2seq')
+        seq2seq = torch.load('./model/newest_seq2seq')
         self._plot_result(seq2seq, train_iter, val_iter)
         
     def _evaluate(self, model, val_iter):
@@ -201,6 +216,8 @@ class RUL():
         total_loss = 0
         random.shuffle(train_iter)
         for [data, label] in train_iter:
+            random_idx = random.randint(0,label.shape[0]-5)
+            data, label = data[random_idx*5:,], label[random_idx:,]  # when chang 10
             data, label = torch.from_numpy(data.copy()), torch.from_numpy(label.copy())
             data, label = data.type(torch.FloatTensor), label.type(torch.FloatTensor)
             data, label = Variable(data).cuda(), Variable(label).cuda()
@@ -268,31 +285,32 @@ class RUL():
             raise ValueError('wrong selection!')
 
         for i,x in enumerate(temp_label):
-            temp_label[i] = np.arange(temp_data[i].shape[0])[::-1] + x
+            temp_label[i] = np.arange(temp_data[i].shape[0]) + x
             temp_label[i] = temp_label[i][:,np.newaxis,np.newaxis]
             temp_label[i] = temp_label[i] / np.max(temp_label[i])
+            temp_label[i] = temp_label[i][::5] # when chang 10
         for i,x in enumerate(temp_data):
             temp_data[i] = x.transpose(0,2,1)
         time_feature = [self._get_time_fea(x) for x in temp_data]
-        # return time_feature, temp_label
+        return time_feature, temp_label
 
         # reverse
-        for i in range(len(time_feature)):
-            time_feature[i] = time_feature[i][::-1,]
-            temp_label[i] = temp_label[i][::-1,]
+        # for i in range(len(time_feature)):
+        #     time_feature[i] = time_feature[i][::-1,]
+        #     temp_label[i] = temp_label[i][::-1,]
         # cut samples with max_len
-        r_time_feature, r_label = [], []
-        for i in range(len(time_feature)):
-            if time_feature[i].shape[0] > max_len:
-                for j in range(time_feature[i].shape[0] // max_len):
-                    r_time_feature.append(time_feature[i][j*max_len:(j+1)*max_len,])
-                    r_label.append(temp_label[i][j*max_len:(j+1)*max_len,])
-                r_time_feature.append(time_feature[i][-max_len:,])
-                r_label.append(temp_label[i][-max_len:,])
-            else:
-                r_time_feature.append(time_feature[i])
-                r_label.append(temp_label[i])
-        return r_time_feature, r_label
+        # r_time_feature, r_label = [], []
+        # for i in range(len(time_feature)):
+        #     if time_feature[i].shape[0] > max_len:
+        #         for j in range(time_feature[i].shape[0] // max_len):
+        #             r_time_feature.append(time_feature[i][j*max_len:(j+1)*max_len,])
+        #             r_label.append(temp_label[i][j*max_len:(j+1)*max_len,])
+        #         r_time_feature.append(time_feature[i][-max_len:,])
+        #         r_label.append(temp_label[i][-max_len:,])
+        #     else:
+        #         r_time_feature.append(time_feature[i])
+        #         r_label.append(temp_label[i])
+        # return r_time_feature, r_label
 
     def _get_time_fea(self, data):
         fea_dict = OrderedDict()
@@ -338,5 +356,5 @@ class RUL():
 
 if __name__ == '__main__':
     process = RUL()
-    # process.train()
+    process.train()
     process.test()
