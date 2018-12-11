@@ -27,9 +27,8 @@ class Encoder(nn.Module):
         self.cnn_kernel_size = 64
         self.cnn_strides = 5   # when chang 10
         self.cnn = nn.Sequential(
-            nn.Conv1d(self.input_size, 64, self.cnn_kernel_size, self.cnn_strides),
-            # nn.ReLU()
-            nn.PReLU()
+            nn.Conv1d(self.input_size, 64, self.cnn_kernel_size, self.cnn_strides, bias=False),
+            nn.Tanh()
             )
         self.gru = nn.GRU(64, hidden_size, n_layers,
                           dropout=dropout, bidirectional=True)
@@ -60,11 +59,11 @@ class Attention(nn.Module):
         h = hidden.repeat(timestep, 1,  1).transpose(0, 1)
         encoder_outputs = encoder_outputs.transpose(0, 1)  # [B*T*H]
         attn_energies = self.score(h, encoder_outputs)
-        return F.relu(attn_energies).unsqueeze(1)
+        return F.softmax(attn_energies,dim=1).unsqueeze(1)
 
     def score(self, hidden, encoder_outputs):
         # [B*T*2H]->[B*T*H]
-        energy = F.softmax(self.attn(torch.cat([hidden, encoder_outputs], 2)),dim=2)
+        energy = F.relu(self.attn(torch.cat([hidden, encoder_outputs], 2)))
         energy = energy.transpose(1, 2)  # [B*H*T]
         v = self.v.repeat(encoder_outputs.size(0), 1).unsqueeze(1)  # [B*1*H]
         energy = torch.bmm(v, energy)  # [B*1*T]
@@ -82,7 +81,9 @@ class Decoder(nn.Module):
         self.attention = Attention(hidden_size)
         self.gru = nn.GRU(hidden_size + output_size, hidden_size,
                           n_layers, dropout=dropout)
-        self.out = nn.Linear(hidden_size * 2, output_size)
+        self.out = nn.Sequential(
+            nn.Linear(hidden_size * 2, output_size)
+            )
 
     def forward(self, input, last_hidden, encoder_outputs):
         # Get the embedding of the current input word (last output word)
@@ -110,7 +111,7 @@ class Seq2Seq(nn.Module):
         self.teacher_forcing_ratio = teacher_forcing_ratio
 
     def forward(self, src, trg, teacher_forcing_ratio=None, is_analyse=False):
-        batch_size = src.size(1)
+        batch_size = trg.size(1)
         max_len = trg.size(0)
         vocab_size = self.decoder.output_size
         outputs = Variable(torch.zeros(max_len, batch_size, vocab_size)).cuda()
@@ -142,9 +143,9 @@ class Seq2Seq(nn.Module):
 
 class RUL():
     def __init__(self):
-        self.hidden_size = 200
-        self.epochs = 400
-        self.lr = 1e-3
+        self.hidden_size = 128
+        self.epochs = 200
+        self.lr = 3e-4
         self.gama = 0.7
         self.dataset = DataSet.load_dataset(name='phm_data')
         self.train_bearings = ['Bearing1_1','Bearing1_2','Bearing2_1','Bearing2_2','Bearing3_1','Bearing3_2']
@@ -165,6 +166,8 @@ class RUL():
         # seq2seq = torch.load('./model/newest_seq2seq')
         seq2seq.teacher_forcing_ratio = 0.3
         optimizer = optim.Adam(seq2seq.parameters(), lr=self.lr)
+        # optimizer = optim.RMSprop(seq2seq.parameters(), lr=self.lr)
+        # optimizer = optim.SGD(seq2seq.parameters(), lr=self.lr, momentum=0.5)
 
         log = OrderedDict()
         log['train_loss'] = []
@@ -200,10 +203,6 @@ class RUL():
             
             if (count2+1) % 40 == 0:
                 optimizer.param_groups[0]['lr'] *= 0.9
-                
-
-            # if e % 20 == 0:
-            #     self._plot_result(seq2seq, train_iter, val_iter)
 
     def test(self):
         train_data,train_label = self._preprocess('train')
@@ -263,10 +262,16 @@ class RUL():
 
         sio.savemat('analyse_data.mat',analyse_data)
 
+    def _custom_loss(self, pred, tru, seq_len):
+        total_loss = 0
+        for i,l in enumerate(seq_len):
+            loss = torch.mean((tru[0:l,i,:] - pred[0:l,i,:])**2)
+            total_loss += loss
+        return total_loss/len(seq_len)
+
         
     def _evaluate(self, model, val_iter):
         model.eval()
-        # [data, label] = random.choice(val_iter)
         total_loss = 0
         for [data, label] in val_iter:
             with torch.no_grad():
@@ -282,30 +287,40 @@ class RUL():
 
     def _fit(self, e, model, optimizer, train_iter, grad_clip=10.0):
         model.train()
-        total_loss = 0
+        batchbyn = 1
+        max_data_len = 0
+        max_label_len = 0
         random.shuffle(train_iter)
+        train_data = []
+        train_label = []
+        seq_label_len = []
         for [data, label] in train_iter:
-            random_idx = random.randint(0,label.shape[0]-5)
-            # data_len, label_len = data.shape[0]-random_idx*5, label.shape[0]-random_idx
-            # cat_data, cat_label = [], []
-            # for i in range(min(random_idx+1,12)):
-            #     cat_data.append(data[i*5:i*5+data_len,])    # when chang 10
-            #     cat_label.append(label[i:i+label_len,])
-            # data = np.concatenate(cat_data, axis=1)
-            # label = np.concatenate(cat_label, axis=1)
-            data, label = data[random_idx*5:,], label[random_idx:,]  # when chang 10
-            data, label = torch.from_numpy(data.copy()), torch.from_numpy(label.copy())
-            data, label = data.type(torch.FloatTensor), label.type(torch.FloatTensor)
-            data, label = Variable(data).cuda(), Variable(label).cuda()
-            optimizer.zero_grad()
-            output = model(data, label)
-            loss = F.mse_loss(output,label)
-            loss.backward()
-            clip_grad_norm_(model.parameters(), grad_clip)
-            optimizer.step()
-            total_loss += loss.data
-            torch.cuda.empty_cache()        #empty useless variable
-        return total_loss / len(train_iter)
+            for _ in range(batchbyn):
+                random_idx = random.randint(0,label.shape[0]-5)
+                train_data.append(data[random_idx*5:,])
+                train_label.append(label[random_idx:,])
+                max_data_len = max(max_data_len,data.shape[0]-random_idx*5)
+                max_label_len = max(max_label_len,label.shape[0]-random_idx)
+                seq_label_len.append(label.shape[0]-random_idx)
+        
+        for i,data in enumerate(train_data):
+            train_data[i] = np.concatenate((data,np.zeros((max_data_len-data.shape[0],1,self.feature_size))),axis=0)
+        for i,label in enumerate(train_label):
+            train_label[i] = np.concatenate((label,np.zeros((max_label_len-label.shape[0],1,1))))
+        train_data = np.concatenate(train_data,axis=1)
+        train_label = np.concatenate(train_label,axis=1)
+        
+        train_data, train_label = torch.from_numpy(train_data), torch.from_numpy(train_label)
+        train_data, train_label = train_data.type(torch.FloatTensor), train_label.type(torch.FloatTensor)
+        train_data, train_label = Variable(train_data).cuda(), Variable(train_label).cuda()
+        optimizer.zero_grad()
+        output = model(train_data, train_label)
+        # loss = F.mse_loss(output, train_label)
+        loss = self._custom_loss(output,train_label,seq_label_len)
+        loss.backward()
+        clip_grad_norm_(model.parameters(), grad_clip)
+        optimizer.step()
+        return loss.data
 
 
     def _plot_result(self, model, train_iter, val_iter):
@@ -350,7 +365,6 @@ class RUL():
 
     
     def _preprocess(self, select, is_analyse=False):
-        max_len = 500
         if select == 'train':
             temp_data = self.dataset.get_value('data',condition={'bearing_name':self.train_bearings})
             temp_label = self.dataset.get_value('RUL',condition={'bearing_name':self.train_bearings})
@@ -376,24 +390,24 @@ class RUL():
 
     def _get_time_fea(self, data, is_norm=True):
         fea_dict = OrderedDict()
-        fea_dict['mean'] = np.mean(data,axis=2,keepdims=True)
+        # fea_dict['mean'] = np.mean(data,axis=2,keepdims=True)
         fea_dict['rms'] = np.sqrt(np.mean(data**2,axis=2,keepdims=True))
-        fea_dict['kur'] = np.sum((data-fea_dict['mean'].repeat(data.shape[2],axis=2))**4,axis=2) \
-                / (np.var(data,axis=2)**2*data.shape[2])
-        fea_dict['kur'] = fea_dict['kur'][:,:,np.newaxis]
-        fea_dict['skew'] = np.sum((data-fea_dict['mean'].repeat(data.shape[2],axis=2))**3,axis=2) \
-                / (np.var(data,axis=2)**(3/2)*data.shape[2])
-        fea_dict['skew'] = fea_dict['skew'][:,:,np.newaxis]
+        # fea_dict['kur'] = np.sum((data-fea_dict['mean'].repeat(data.shape[2],axis=2))**4,axis=2) \
+        #         / (np.var(data,axis=2)**2*data.shape[2])
+        # fea_dict['kur'] = fea_dict['kur'][:,:,np.newaxis]
+        # fea_dict['skew'] = np.sum((data-fea_dict['mean'].repeat(data.shape[2],axis=2))**3,axis=2) \
+        #         / (np.var(data,axis=2)**(3/2)*data.shape[2])
+        # fea_dict['skew'] = fea_dict['skew'][:,:,np.newaxis]
         fea_dict['p2p'] = np.max(data,axis=2,keepdims=True) - np.min(data,axis=2,keepdims=True)
         fea_dict['var'] = np.var(data,axis=2,keepdims=True)
-        fea_dict['cre'] = np.max(abs(data),axis=2,keepdims=True) / fea_dict['rms']
-        fea_dict['imp'] = np.max(abs(data),axis=2,keepdims=True) \
-                / np.mean(abs(data),axis=2,keepdims=True)
+        # fea_dict['cre'] = np.max(abs(data),axis=2,keepdims=True) / fea_dict['rms']
+        # fea_dict['imp'] = np.max(abs(data),axis=2,keepdims=True) \
+        #         / np.mean(abs(data),axis=2,keepdims=True)
         fea_dict['mar'] = np.max(abs(data),axis=2,keepdims=True) \
                 / (np.mean((abs(data))**0.5,axis=2,keepdims=True))**2
         fea_dict['sha'] = fea_dict['rms'] / np.mean(abs(data),axis=2,keepdims=True)
-        fea_dict['smr'] = (np.mean((abs(data))**0.5,axis=2,keepdims=True))**2
-        fea_dict['cle'] = fea_dict['p2p'] / fea_dict['smr']
+        # fea_dict['smr'] = (np.mean((abs(data))**0.5,axis=2,keepdims=True))**2
+        # fea_dict['cle'] = fea_dict['p2p'] / fea_dict['smr']
 
         fea = np.concatenate(tuple(x for x in fea_dict.values()),axis=2)
         fea = fea.reshape(-1,fea.shape[1]*fea.shape[2])
@@ -412,6 +426,7 @@ class RUL():
             r_data = (data - np.min(data)) / mmrange
         else:
             mmrange = 10.**np.ceil(np.log10(np.max(data,axis=dim,keepdims=True) - np.min(data,axis=dim,keepdims=True)))
+            # mmrange = np.max(data,axis=dim,keepdims=True) - np.min(data,axis=dim,keepdims=True)
             r_data = (data - np.min(data,axis=dim,keepdims=True).repeat(data.shape[dim],axis=dim)) \
                 / (mmrange).repeat(data.shape[dim],axis=dim)
         return r_data
@@ -420,5 +435,5 @@ class RUL():
 if __name__ == '__main__':
     process = RUL()
     process.train()
+    process.analyse()
     process.test()
-    # process.analyse()
