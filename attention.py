@@ -25,23 +25,38 @@ class Encoder(nn.Module):
         self.input_size = input_size
         self.hidden_size = hidden_size
         self.cnn_kernel_size = 64
-        self.cnn_strides = 5   # when chang 10
+        self.cnn_strides = 8   # when chang 10
         self.cnn = nn.Sequential(
             nn.Conv1d(self.input_size, 64, self.cnn_kernel_size, self.cnn_strides, bias=False),
-            nn.Tanh()
+            nn.PReLU()
             )
+        self.cnn_2 = nn.Sequential(
+            nn.Conv1d(32,64,self.cnn_kernel_size,self.cnn_strides),
+            nn.PReLU()
+        )
         self.gru = nn.GRU(64, hidden_size, n_layers,
                           dropout=dropout, bidirectional=True)
 
-    def forward(self, x, hidden=None):
+    def forward(self, x, len_seq, hidden=None):
         x = x.permute(1,2,0)  # [B*N*T]
+
         padding = self.cnn_kernel_size - x.size(2) % self.cnn_strides
         x = F.pad(x, (0,padding))
         x = self.cnn(x)
+
+        # padding = self.cnn_kernel_size - x.size(2) % self.cnn_strides
+        # x = F.pad(x, (0,padding))
+        # x = self.cnn_2(x)
+
         x = x.permute(2,0,1).contiguous()  # [T*B*N]
+        x = nn.utils.rnn.pack_padded_sequence(x,len_seq)
         outputs, hidden = self.gru(x, hidden)
-        outputs = (outputs[:, :, :self.hidden_size] +
-                   outputs[:, :, self.hidden_size:])
+        outputs = nn.utils.rnn.pad_packed_sequence(outputs)
+        # pad_packed_sequence return a tuple
+        # r_tuple[0] is the padded sequence
+        # and r_tuple[1] is a tensor contained length of sequence
+        outputs = (outputs[0][:, :, :self.hidden_size] +
+                   outputs[0][:, :, self.hidden_size:])
         return outputs, hidden
 
 
@@ -54,12 +69,20 @@ class Attention(nn.Module):
         stdv = 1. / math.sqrt(self.v.size(0))
         self.v.data.uniform_(-stdv, stdv)
 
-    def forward(self, hidden, encoder_outputs):
+    def forward(self, hidden, encoder_outputs, len_seq):
         timestep = encoder_outputs.size(0)
         h = hidden.repeat(timestep, 1,  1).transpose(0, 1)
         encoder_outputs = encoder_outputs.transpose(0, 1)  # [B*T*H]
         attn_energies = self.score(h, encoder_outputs)
-        return F.softmax(attn_energies,dim=1).unsqueeze(1)
+        new_atten = []
+        for i,l in enumerate(len_seq):
+            if l == timestep:
+                temp_atten = F.softmax(attn_energies[i:i+1,],dim=1)
+            else:
+                temp_atten = torch.cat([F.softmax(attn_energies[i:i+1,:l],dim=1),Variable(torch.zeros(1,timestep-l)).cuda()],1)
+            new_atten.append(temp_atten)
+        new_atten = torch.cat(new_atten,0)
+        return new_atten.unsqueeze(1)
 
     def score(self, hidden, encoder_outputs):
         # [B*T*2H]->[B*T*H]
@@ -85,12 +108,12 @@ class Decoder(nn.Module):
             nn.Linear(hidden_size * 2, output_size)
             )
 
-    def forward(self, input, last_hidden, encoder_outputs):
+    def forward(self, input, last_hidden, encoder_outputs, len_seq):
         # Get the embedding of the current input word (last output word)
         # embedded = self.embed(input).unsqueeze(0)  # (1,B,N)
         embedded = input.unsqueeze(0)
         # Calculate attention weights and apply to encoder outputs
-        attn_weights = self.attention(last_hidden[-1], encoder_outputs)
+        attn_weights = self.attention(last_hidden[-1], encoder_outputs, len_seq)
         context = attn_weights.bmm(encoder_outputs.transpose(0, 1))  # (B,1,N)
         context = context.transpose(0, 1)  # (1,B,N)
         # Combine embedded input word and attended context, run through RNN
@@ -110,13 +133,13 @@ class Seq2Seq(nn.Module):
         self.decoder = decoder
         self.teacher_forcing_ratio = teacher_forcing_ratio
 
-    def forward(self, src, trg, teacher_forcing_ratio=None, is_analyse=False):
+    def forward(self, src, trg, len_seq, teacher_forcing_ratio=None, is_analyse=False):
         batch_size = trg.size(1)
         max_len = trg.size(0)
         vocab_size = self.decoder.output_size
         outputs = Variable(torch.zeros(max_len, batch_size, vocab_size)).cuda()
 
-        encoder_output, hidden = self.encoder(src)
+        encoder_output, hidden = self.encoder(src, len_seq)
         hidden = hidden[:self.decoder.n_layers]
         output = Variable(trg.data[0,])  # sos
 
@@ -126,7 +149,7 @@ class Seq2Seq(nn.Module):
             analyse_data['atten'] = []
         for t in range(1, max_len):
             output, hidden, attn_weights = self.decoder(
-                    output, hidden, encoder_output)
+                    output, hidden, encoder_output, len_seq)
             outputs[t] = output
             if teacher_forcing_ratio == None:
                 teacher_forcing_ratio = self.teacher_forcing_ratio
@@ -143,9 +166,9 @@ class Seq2Seq(nn.Module):
 
 class RUL():
     def __init__(self):
-        self.hidden_size = 128
-        self.epochs = 200
-        self.lr = 3e-4
+        self.hidden_size = 200
+        self.epochs = 500
+        self.lr = 1e-3
         self.gama = 0.7
         self.dataset = DataSet.load_dataset(name='phm_data')
         self.train_bearings = ['Bearing1_1','Bearing1_2','Bearing2_1','Bearing2_2','Bearing3_1','Bearing3_2']
@@ -168,6 +191,7 @@ class RUL():
         optimizer = optim.Adam(seq2seq.parameters(), lr=self.lr)
         # optimizer = optim.RMSprop(seq2seq.parameters(), lr=self.lr)
         # optimizer = optim.SGD(seq2seq.parameters(), lr=self.lr, momentum=0.5)
+        # optimizer = optim.LBFGS(seq2seq.parameters(),lr=self.lr)
 
         log = OrderedDict()
         log['train_loss'] = []
@@ -176,6 +200,7 @@ class RUL():
         log['teacher_ratio'] = []
         count = 0
         count2 = 0
+        e0 = 15
         for e in range(1, self.epochs+1):
             train_loss = self._fit(e, seq2seq, optimizer, train_iter)
             val_loss = self._evaluate(seq2seq, train_iter)
@@ -196,13 +221,12 @@ class RUL():
                 count += 1
             else:
                 count = 0
-            if count >= 3 or count2 >= 100:
-                seq2seq.teacher_forcing_ratio *= self.gama
+            if count >= 3 or count2 >= 50:
+                seq2seq.teacher_forcing_ratio = max(1e-5,self.gama*seq2seq.teacher_forcing_ratio)
                 count -= 1
                 count2 = 0
-            
-            if (count2+1) % 40 == 0:
-                optimizer.param_groups[0]['lr'] *= 0.9
+
+            # optimizer.param_groups[0]['lr'] = (self.lr - (e%e0) * (self.lr-1e-7) / e0)*0.99**e
 
     def test(self):
         train_data,train_label = self._preprocess('train')
@@ -265,7 +289,7 @@ class RUL():
     def _custom_loss(self, pred, tru, seq_len):
         total_loss = 0
         for i,l in enumerate(seq_len):
-            loss = torch.mean((tru[0:l,i,:] - pred[0:l,i,:])**2)
+            loss = torch.mean((tru[:l,i,:] - pred[:l,i,:])**2)
             total_loss += loss
         return total_loss/len(seq_len)
 
@@ -279,7 +303,7 @@ class RUL():
                 data, label = data.type(torch.FloatTensor), label.type(torch.FloatTensor)
                 data = Variable(data).cuda()
                 label = Variable(label).cuda()
-                output = model(data, label, teacher_forcing_ratio=0.0)
+                output = model(data, label, len_seq=[label.size(0)], teacher_forcing_ratio=0.0)
             loss = F.mse_loss(output,label)
             total_loss += loss.data
         return total_loss / len(val_iter)
@@ -296,29 +320,35 @@ class RUL():
         seq_label_len = []
         for [data, label] in train_iter:
             for _ in range(batchbyn):
-                random_idx = random.randint(0,label.shape[0]-5)
-                train_data.append(data[random_idx*5:,])
+                random_idx = random.randint(0,round(label.shape[0]*0.3))
+                train_data.append(data[random_idx*8:,]) # when chang 10
                 train_label.append(label[random_idx:,])
-                max_data_len = max(max_data_len,data.shape[0]-random_idx*5)
+                max_data_len = max(max_data_len,data.shape[0]-random_idx*8) # when chang 10
                 max_label_len = max(max_label_len,label.shape[0]-random_idx)
                 seq_label_len.append(label.shape[0]-random_idx)
         
         for i,data in enumerate(train_data):
             train_data[i] = np.concatenate((data,np.zeros((max_data_len-data.shape[0],1,self.feature_size))),axis=0)
         for i,label in enumerate(train_label):
-            train_label[i] = np.concatenate((label,np.zeros((max_label_len-label.shape[0],1,1))))
+            train_label[i] = np.concatenate((label,-np.ones((max_label_len-label.shape[0],1,1))),axis=0)
         train_data = np.concatenate(train_data,axis=1)
         train_label = np.concatenate(train_label,axis=1)
-        
+
+        sorted_len_seq_t = sorted(enumerate(seq_label_len), key=lambda x:x[1],reverse=True)
+        sorted_len_seq = [x for (_,x) in sorted_len_seq_t]
+        sorted_index = [x for (x,_) in sorted_len_seq_t]
+        train_data = train_data[:,sorted_index,:]
+        train_label = train_label[:,sorted_index,:]
+
         train_data, train_label = torch.from_numpy(train_data), torch.from_numpy(train_label)
         train_data, train_label = train_data.type(torch.FloatTensor), train_label.type(torch.FloatTensor)
         train_data, train_label = Variable(train_data).cuda(), Variable(train_label).cuda()
         optimizer.zero_grad()
-        output = model(train_data, train_label)
+        output = model(train_data, train_label, sorted_len_seq)
         # loss = F.mse_loss(output, train_label)
-        loss = self._custom_loss(output,train_label,seq_label_len)
+        loss = self._custom_loss(output,train_label,sorted_len_seq)
         loss.backward()
-        clip_grad_norm_(model.parameters(), grad_clip)
+        # clip_grad_norm_(model.parameters(), grad_clip)
         optimizer.step()
         return loss.data
 
@@ -378,7 +408,7 @@ class RUL():
             temp_label[i] = np.arange(temp_data[i].shape[0]) + x
             temp_label[i] = temp_label[i][:,np.newaxis,np.newaxis]
             temp_label[i] = temp_label[i] / np.max(temp_label[i])
-            temp_label[i] = temp_label[i][::5] # when chang 10
+            temp_label[i] = temp_label[i][::8] # when chang 10
         for i,x in enumerate(temp_data):
             temp_data[i] = x[::-1,].transpose(0,2,1)
         time_feature = [self._get_time_fea(x) for x in temp_data]
@@ -390,30 +420,30 @@ class RUL():
 
     def _get_time_fea(self, data, is_norm=True):
         fea_dict = OrderedDict()
-        # fea_dict['mean'] = np.mean(data,axis=2,keepdims=True)
+        fea_dict['mean'] = np.mean(data,axis=2,keepdims=True)
         fea_dict['rms'] = np.sqrt(np.mean(data**2,axis=2,keepdims=True))
-        # fea_dict['kur'] = np.sum((data-fea_dict['mean'].repeat(data.shape[2],axis=2))**4,axis=2) \
-        #         / (np.var(data,axis=2)**2*data.shape[2])
-        # fea_dict['kur'] = fea_dict['kur'][:,:,np.newaxis]
-        # fea_dict['skew'] = np.sum((data-fea_dict['mean'].repeat(data.shape[2],axis=2))**3,axis=2) \
-        #         / (np.var(data,axis=2)**(3/2)*data.shape[2])
-        # fea_dict['skew'] = fea_dict['skew'][:,:,np.newaxis]
+        fea_dict['kur'] = np.sum((data-fea_dict['mean'].repeat(data.shape[2],axis=2))**4,axis=2) \
+                / (np.var(data,axis=2)**2*data.shape[2])
+        fea_dict['kur'] = fea_dict['kur'][:,:,np.newaxis]
+        fea_dict['skew'] = np.sum((data-fea_dict['mean'].repeat(data.shape[2],axis=2))**3,axis=2) \
+                / (np.var(data,axis=2)**(3/2)*data.shape[2])
+        fea_dict['skew'] = fea_dict['skew'][:,:,np.newaxis]
         fea_dict['p2p'] = np.max(data,axis=2,keepdims=True) - np.min(data,axis=2,keepdims=True)
         fea_dict['var'] = np.var(data,axis=2,keepdims=True)
-        # fea_dict['cre'] = np.max(abs(data),axis=2,keepdims=True) / fea_dict['rms']
-        # fea_dict['imp'] = np.max(abs(data),axis=2,keepdims=True) \
-        #         / np.mean(abs(data),axis=2,keepdims=True)
+        fea_dict['cre'] = np.max(abs(data),axis=2,keepdims=True) / fea_dict['rms']
+        fea_dict['imp'] = np.max(abs(data),axis=2,keepdims=True) \
+                / np.mean(abs(data),axis=2,keepdims=True)
         fea_dict['mar'] = np.max(abs(data),axis=2,keepdims=True) \
                 / (np.mean((abs(data))**0.5,axis=2,keepdims=True))**2
         fea_dict['sha'] = fea_dict['rms'] / np.mean(abs(data),axis=2,keepdims=True)
-        # fea_dict['smr'] = (np.mean((abs(data))**0.5,axis=2,keepdims=True))**2
-        # fea_dict['cle'] = fea_dict['p2p'] / fea_dict['smr']
+        fea_dict['smr'] = (np.mean((abs(data))**0.5,axis=2,keepdims=True))**2
+        fea_dict['cle'] = fea_dict['p2p'] / fea_dict['smr']
 
         fea = np.concatenate(tuple(x for x in fea_dict.values()),axis=2)
         fea = fea.reshape(-1,fea.shape[1]*fea.shape[2])
         self.feature_size = fea.shape[1]
         if is_norm:
-            fea = self._normalize(fea,dim=0)
+            fea = self._normalize(fea,dim=1)
         fea = fea[:,np.newaxis,:]
         return fea
     
