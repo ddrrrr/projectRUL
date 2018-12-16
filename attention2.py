@@ -19,19 +19,19 @@ from dataset import DataSet
 '''
 
 class Encoder(nn.Module):
-    def __init__(self, input_size, hidden_size,
+    def __init__(self, input_size, hidden_size, strides,
                  n_layers=1, dropout=0.5):
         super(Encoder, self).__init__()
         self.input_size = input_size
         self.hidden_size = hidden_size
         self.cnn_kernel_size = 64
-        self.cnn_strides = 5   # when chang 10
+        self.cnn_strides = strides   # when chang 10
         self.cnn = nn.Sequential(
-            nn.Conv1d(self.input_size, 64, self.cnn_kernel_size, self.cnn_strides),
+            nn.Conv1d(self.input_size, 96, self.cnn_kernel_size, self.cnn_strides),
             # nn.ReLU()
             nn.PReLU()
             )
-        self.gru = nn.GRU(64, hidden_size, n_layers,
+        self.gru = nn.GRU(96, hidden_size, n_layers,
                           dropout=dropout, bidirectional=True)
 
     def forward(self, x, hidden=None):
@@ -50,7 +50,10 @@ class Attention(nn.Module):
     def __init__(self, hidden_size):
         super(Attention, self).__init__()
         self.hidden_size = hidden_size
-        self.attn = nn.Linear(self.hidden_size * 2, hidden_size)
+        self.attn = nn.Sequential(
+            nn.Linear(self.hidden_size * 2, hidden_size),
+            nn.ReLU()
+            )
         self.v = nn.Parameter(torch.rand(hidden_size))
         stdv = 1. / math.sqrt(self.v.size(0))
         self.v.data.uniform_(-stdv, stdv)
@@ -64,7 +67,7 @@ class Attention(nn.Module):
 
     def score(self, hidden, encoder_outputs):
         # [B*T*2H]->[B*T*H]
-        energy = F.relu(self.attn(torch.cat([hidden, encoder_outputs], 2)))
+        energy = self.attn(torch.cat([hidden, encoder_outputs], 2))
         energy = energy.transpose(1, 2)  # [B*H*T]
         v = self.v.repeat(encoder_outputs.size(0), 1).unsqueeze(1)  # [B*1*H]
         energy = torch.bmm(v, energy)  # [B*1*T]
@@ -117,7 +120,10 @@ class Seq2Seq(nn.Module):
 
         encoder_output, hidden = self.encoder(src)
         hidden = hidden[:self.decoder.n_layers]
-        output = Variable(trg.data[0,])  # sos
+        if teacher_forcing_ratio == None:
+            teacher_forcing_ratio = self.teacher_forcing_ratio
+        is_teacher = random.random() < teacher_forcing_ratio
+        output = Variable(trg.data[0,] if is_teacher else outputs[0,]).cuda()
         if is_analyse:
             analyse_data = OrderedDict()
             analyse_data['fea_after_encoder'] = encoder_output.data.cpu().numpy()
@@ -126,8 +132,6 @@ class Seq2Seq(nn.Module):
             output, hidden, attn_weights = self.decoder(
                     output, hidden, encoder_output)
             outputs[t] = output
-            if teacher_forcing_ratio == None:
-                teacher_forcing_ratio = self.teacher_forcing_ratio
             is_teacher = random.random() < teacher_forcing_ratio
             output = Variable(trg.data[t,] if is_teacher else output).cuda()
             if is_analyse:
@@ -141,10 +145,11 @@ class Seq2Seq(nn.Module):
 
 class RUL():
     def __init__(self):
-        self.hidden_size = 200
+        self.hidden_size = 256
         self.epochs = 1000
         self.lr = 1e-3
         self.gama = 0.7
+        self.strides = 5
         self.dataset = DataSet.load_dataset(name='phm_data')
         self.train_bearings = ['Bearing1_1','Bearing1_2','Bearing2_1','Bearing2_2','Bearing3_1','Bearing3_2']
         self.test_bearings = ['Bearing1_3','Bearing1_4','Bearing1_5','Bearing1_6','Bearing1_7',
@@ -158,8 +163,8 @@ class RUL():
         test_data,test_label = self._preprocess('test')
         val_iter = [[test_data[i],test_label[i]] for i in range(len(test_data))]
 
-        encoder = Encoder(self.feature_size,self.hidden_size,n_layers=2,dropout=0.5)
-        decoder = Decoder(self.hidden_size,1,n_layers=2,dropout=0.5)
+        encoder = Encoder(self.feature_size,self.hidden_size,self.strides,n_layers=1,dropout=0.5)
+        decoder = Decoder(self.hidden_size,1,n_layers=1,dropout=0.5)
         seq2seq = Seq2Seq(encoder,decoder).cuda()
         # seq2seq = torch.load('./model/newest_seq2seq')
         seq2seq.teacher_forcing_ratio = 0.3
@@ -174,6 +179,7 @@ class RUL():
         count = 0
         count2 = 0
         e0 = 30
+        best_loss = 1
         for e in range(1, self.epochs+1):
             train_loss = self._fit(e, seq2seq, optimizer, train_iter)
             val_loss = self._evaluate(seq2seq, train_iter)
@@ -187,6 +193,11 @@ class RUL():
             pd.DataFrame(log).to_csv('./model/log.csv',index=False)
             if float(val_loss) == min(log['val_loss']):
                 torch.save(seq2seq, './model/seq2seq')
+            if (float(test_loss)*11 + float(val_loss)*6)/17 <= best_loss:
+                torch.save(seq2seq,'./model/best_seq2seq')
+                best_loss = (float(test_loss)*11 + float(val_loss)*6)/17
+            if float(test_loss) == min(log['test_loss']):
+                torch.save(seq2seq,'./model/lowest_test_seq2seq')
             torch.save(seq2seq, './model/newest_seq2seq')
 
             count2 += 1
@@ -210,7 +221,7 @@ class RUL():
         test_data,test_label = self._preprocess('test')
         val_iter = [[test_data[i],test_label[i]] for i in range(len(test_data))]
 
-        seq2seq = torch.load('./model/seq2seq')
+        seq2seq = torch.load('./model/best_seq2seq')
         self._plot_result(seq2seq, train_iter, val_iter)
 
     def analyse(self):
@@ -227,7 +238,7 @@ class RUL():
         analyse_data['test_data_no_norm'] = test_data_no_norm
         analyse_data['test_label'] = test_label
 
-        seq2seq = torch.load('./model/seq2seq')
+        seq2seq = torch.load('./model/best_seq2seq')
         seq2seq.eval()
 
         analyse_data['train_fea_after_encoder'] = []
@@ -280,15 +291,8 @@ class RUL():
         total_loss = 0
         random.shuffle(train_iter)
         for [data, label] in train_iter:
-            random_idx = random.randint(0,label.shape[0]-5)
-            # data_len, label_len = data.shape[0]-random_idx*5, label.shape[0]-random_idx
-            # cat_data, cat_label = [], []
-            # for i in range(min(random_idx+1,12)):
-            #     cat_data.append(data[i*5:i*5+data_len,])    # when chang 10
-            #     cat_label.append(label[i:i+label_len,])
-            # data = np.concatenate(cat_data, axis=1)
-            # label = np.concatenate(cat_label, axis=1)
-            data, label = data[random_idx*5:,], label[random_idx:,]  # when chang 10
+            random_idx = random.randint(0,round(label.shape[0]*0.3))
+            data, label = data[random_idx*self.strides:,], label[random_idx:,]  # when chang 10
             data, label = torch.from_numpy(data.copy()), torch.from_numpy(label.copy())
             data, label = data.type(torch.FloatTensor), label.type(torch.FloatTensor)
             data, label = Variable(data).cuda(), Variable(label).cuda()
@@ -359,7 +363,7 @@ class RUL():
             temp_label[i] = np.arange(temp_data[i].shape[0]) + x
             temp_label[i] = temp_label[i][:,np.newaxis,np.newaxis]
             temp_label[i] = temp_label[i] / np.max(temp_label[i])
-            temp_label[i] = temp_label[i][::5] # when chang 10
+            temp_label[i] = temp_label[i][::self.strides] # when chang 10
         for i,x in enumerate(temp_data):
             temp_data[i] = x[::-1,].transpose(0,2,1)
         time_feature = [self._get_time_fea(x) for x in temp_data]
