@@ -19,13 +19,13 @@ from dataset import DataSet
 '''
 
 class Encoder(nn.Module):
-    def __init__(self, input_size, hidden_size, strides,
+    def __init__(self, input_size, hidden_size, cnn_k_s, strides,
                  n_layers=1, dropout=0.5):
         super(Encoder, self).__init__()
         self.input_size = input_size
         self.hidden_size = hidden_size
-        self.cnn_kernel_size = 64
-        self.cnn_strides = strides   # when chang 10
+        self.cnn_kernel_size = cnn_k_s
+        self.cnn_strides = strides
         self.cnn = nn.Sequential(
             nn.Conv1d(self.input_size, 96, self.cnn_kernel_size, self.cnn_strides),
             # nn.ReLU()
@@ -36,8 +36,8 @@ class Encoder(nn.Module):
 
     def forward(self, x, hidden=None):
         x = x.permute(1,2,0)  # [B*N*T]
-        padding = self.cnn_kernel_size - x.size(2) % self.cnn_strides
-        x = F.pad(x, (0,padding))
+        # padding = self.cnn_kernel_size - x.size(2) % self.cnn_strides
+        # x = F.pad(x, (0,padding))
         x = self.cnn(x)
         x = x.permute(2,0,1).contiguous()  # [T*B*N]
         outputs, hidden = self.gru(x, hidden)
@@ -145,11 +145,12 @@ class Seq2Seq(nn.Module):
 
 class RUL():
     def __init__(self):
-        self.hidden_size = 256
-        self.epochs = 1000
-        self.lr = 1e-3
+        self.hidden_size = 128
+        self.epochs = 800
+        self.lr = 3e-3
         self.gama = 0.7
         self.strides = 5
+        self.en_cnn_k_s = 64
         self.dataset = DataSet.load_dataset(name='phm_data')
         self.train_bearings = ['Bearing1_1','Bearing1_2','Bearing2_1','Bearing2_2','Bearing3_1','Bearing3_2']
         self.test_bearings = ['Bearing1_3','Bearing1_4','Bearing1_5','Bearing1_6','Bearing1_7',
@@ -163,19 +164,22 @@ class RUL():
         test_data,test_label = self._preprocess('test')
         val_iter = [[test_data[i],test_label[i]] for i in range(len(test_data))]
 
-        encoder = Encoder(self.feature_size,self.hidden_size,self.strides,n_layers=1,dropout=0.5)
+        encoder = Encoder(self.feature_size,self.hidden_size,self.en_cnn_k_s,self.strides,n_layers=1,dropout=0.5)
         decoder = Decoder(self.hidden_size,1,n_layers=1,dropout=0.5)
         seq2seq = Seq2Seq(encoder,decoder).cuda()
         # seq2seq = torch.load('./model/newest_seq2seq')
         seq2seq.teacher_forcing_ratio = 0.3
         optimizer = optim.Adam(seq2seq.parameters(), lr=self.lr)
-        # optimizer = optim.SGD(seq2seq.parameters(), lr=self.lr, momentum=0.5)
+        # optimizer = optim.SGD(seq2seq.parameters(), lr=self.lr)
+        # optimizer = optim.ASGD(seq2seq.parameters(), lr=self.lr)
 
         log = OrderedDict()
         log['train_loss'] = []
         log['val_loss'] = []
         log['test_loss'] = []
         log['teacher_ratio'] = []
+        log['mean_er'] = []
+        log['mean_abs_er'] = []
         count = 0
         count2 = 0
         e0 = 30
@@ -183,20 +187,22 @@ class RUL():
         for e in range(1, self.epochs+1):
             train_loss = self._fit(e, seq2seq, optimizer, train_iter)
             val_loss = self._evaluate(seq2seq, train_iter)
-            test_loss = self._evaluate(seq2seq, val_iter)
-            print("[Epoch:%d][train_loss:%.4e][val_loss:%.4e][test_loss:%.4e][teacher_ratio:%.4f] "
-                % (e, train_loss, val_loss, test_loss, seq2seq.teacher_forcing_ratio))
+            test_loss,er = self._evaluate(seq2seq, val_iter, cal_er=True)
+            print("[Epoch:%d][train_loss:%.4e][val_loss:%.4e][test_loss:%.4e][mean_er:%.4e][mean_abs_er:%.4e]"
+                % (e, train_loss, val_loss, test_loss, np.mean(er), np.mean(np.abs(er))))
             log['train_loss'].append(float(train_loss))
             log['val_loss'].append(float(val_loss))
             log['test_loss'].append(float(test_loss))
             log['teacher_ratio'].append(seq2seq.teacher_forcing_ratio)
+            log['mean_er'].append(float(np.mean(er)))
+            log['mean_abs_er'].append(float(np.mean(np.abs(er))))
             pd.DataFrame(log).to_csv('./model/log.csv',index=False)
             if float(val_loss) == min(log['val_loss']):
                 torch.save(seq2seq, './model/seq2seq')
             if (float(test_loss)*11 + float(val_loss)*6)/17 <= best_loss:
                 torch.save(seq2seq,'./model/best_seq2seq')
                 best_loss = (float(test_loss)*11 + float(val_loss)*6)/17
-            if float(test_loss) == min(log['test_loss']):
+            if float(np.mean(np.abs(er))) == min(log['mean_abs_er']):
                 torch.save(seq2seq,'./model/lowest_test_seq2seq')
             torch.save(seq2seq, './model/newest_seq2seq')
 
@@ -273,17 +279,29 @@ class RUL():
 
         sio.savemat('analyse_data.mat',analyse_data)
         
-    def _evaluate(self, model, val_iter):
+    def _evaluate(self, model, val_iter, cal_er=False):
         model.eval()
-        [data, label] = random.choice(val_iter)
-        with torch.no_grad():
-            data, label = torch.from_numpy(data.copy()), torch.from_numpy(label.copy())
-            data, label = data.type(torch.FloatTensor), label.type(torch.FloatTensor)
-            data = Variable(data).cuda()
-            label = Variable(label).cuda()
-            output = model(data, label, teacher_forcing_ratio=0.0)
-        loss = F.mse_loss(output,label)
-        return loss.data
+        total_loss = 0
+        er = []
+        for [data, label] in val_iter:
+            with torch.no_grad():
+                data, label = torch.from_numpy(data.copy()), torch.from_numpy(label.copy())
+                data, label = data.type(torch.FloatTensor), label.type(torch.FloatTensor)
+                data = Variable(data).cuda()
+                label = Variable(label).cuda()
+                output = model(data, label, teacher_forcing_ratio=0.0)
+                if cal_er:
+                    label_n = label.data.cpu().numpy().reshape(-1,)
+                    output_n = output.data.cpu().numpy().reshape(-1,)
+                    x = np.arange(label_n.shape[0]) * self.strides
+                    er.append(list(map(lambda x:x[1]/x[0],[np.polyfit(x,label_n,1),np.polyfit(x[5:],output_n[5:],1)])))
+            loss = F.mse_loss(output,label)
+            total_loss += loss.data  
+        if cal_er:
+            er = list(map(lambda x:(x[0] - x[1]) / x[0], er))
+            return total_loss/len(val_iter), np.array(er)
+        else:
+            return total_loss / len(val_iter)
 
 
     def _fit(self, e, model, optimizer, train_iter, grad_clip=10.0):
@@ -292,7 +310,7 @@ class RUL():
         random.shuffle(train_iter)
         for [data, label] in train_iter:
             random_idx = random.randint(0,round(label.shape[0]*0.3))
-            data, label = data[random_idx*self.strides:,], label[random_idx:,]  # when chang 10
+            data, label = data[random_idx*self.strides:,], label[random_idx:,]
             data, label = torch.from_numpy(data.copy()), torch.from_numpy(label.copy())
             data, label = data.type(torch.FloatTensor), label.type(torch.FloatTensor)
             data, label = Variable(data).cuda(), Variable(label).cuda()
@@ -363,7 +381,7 @@ class RUL():
             temp_label[i] = np.arange(temp_data[i].shape[0]) + x
             temp_label[i] = temp_label[i][:,np.newaxis,np.newaxis]
             temp_label[i] = temp_label[i] / np.max(temp_label[i])
-            temp_label[i] = temp_label[i][::self.strides] # when chang 10
+            temp_label[i] = temp_label[i][:-self.en_cnn_k_s:self.strides] # when chang 10
         for i,x in enumerate(temp_data):
             temp_data[i] = x[::-1,].transpose(0,2,1)
         time_feature = [self._get_time_fea(x) for x in temp_data]
@@ -410,7 +428,8 @@ class RUL():
             mmrange = 10.**np.ceil(np.log10(np.max(data) - np.min(data)))
             r_data = (data - np.min(data)) / mmrange
         else:
-            mmrange = 10.**np.ceil(np.log10(np.max(data,axis=dim,keepdims=True) - np.min(data,axis=dim,keepdims=True)))
+            # mmrange = 10.**np.ceil(np.log10(np.max(data,axis=dim,keepdims=True) - np.min(data,axis=dim,keepdims=True)))
+            mmrange = np.max(data,axis=dim,keepdims=True) - np.min(data,axis=dim,keepdims=True)
             r_data = (data - np.min(data,axis=dim,keepdims=True).repeat(data.shape[dim],axis=dim)) \
                 / (mmrange).repeat(data.shape[dim],axis=dim)
         return r_data
