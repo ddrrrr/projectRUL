@@ -150,7 +150,7 @@ class RUL():
         self.lr = 3e-3
         self.gama = 0.7
         self.strides = 5
-        self.en_cnn_k_s = 64
+        self.en_cnn_k_s = 8
         self.dataset = DataSet.load_dataset(name='phm_data')
         self.train_bearings = ['Bearing1_1','Bearing1_2','Bearing2_1','Bearing2_2','Bearing3_1','Bearing3_2']
         self.test_bearings = ['Bearing1_3','Bearing1_4','Bearing1_5','Bearing1_6','Bearing1_7',
