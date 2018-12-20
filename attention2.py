@@ -150,7 +150,7 @@ class RUL():
         self.lr = 1e-3
         self.gama = 0.7
         self.strides = 5
-        self.en_cnn_k_s = 5
+        self.en_cnn_k_s = 16
         self.dataset = DataSet.load_dataset(name='phm_data')
         self.train_bearings = ['Bearing1_1','Bearing1_2','Bearing2_1','Bearing2_2','Bearing3_1','Bearing3_2']
         self.test_bearings = ['Bearing1_3','Bearing1_4','Bearing1_5','Bearing1_6','Bearing1_7',
@@ -164,8 +164,8 @@ class RUL():
         test_data,test_label = self._preprocess('test')
         val_iter = [[test_data[i],test_label[i]] for i in range(len(test_data))]
 
-        encoder = Encoder(self.feature_size,self.hidden_size,self.en_cnn_k_s,self.strides,n_layers=2,dropout=0.5)
-        decoder = Decoder(self.hidden_size,1,n_layers=2,dropout=0.5)
+        encoder = Encoder(self.feature_size,self.hidden_size,self.en_cnn_k_s,self.strides,n_layers=1,dropout=0.5)
+        decoder = Decoder(self.hidden_size,1,n_layers=1,dropout=0.5)
         seq2seq = Seq2Seq(encoder,decoder).cuda()
         # seq2seq = torch.load('./model/newest_seq2seq')
         seq2seq.teacher_forcing_ratio = 0.3
