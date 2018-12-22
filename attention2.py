@@ -27,11 +27,11 @@ class Encoder(nn.Module):
         self.cnn_kernel_size = cnn_k_s
         self.cnn_strides = strides
         self.cnn = nn.Sequential(
-            nn.Conv1d(self.input_size, 96, self.cnn_kernel_size, self.cnn_strides),
+            nn.Conv1d(self.input_size, 64, self.cnn_kernel_size, self.cnn_strides),
             # nn.ReLU()
             nn.PReLU()
             )
-        self.gru = nn.GRU(96, hidden_size, n_layers,
+        self.gru = nn.GRU(64, hidden_size, n_layers,
                           dropout=dropout, bidirectional=True)
 
     def forward(self, x, hidden=None):
@@ -145,11 +145,11 @@ class Seq2Seq(nn.Module):
 
 class RUL():
     def __init__(self):
-        self.hidden_size = 128
+        self.hidden_size = 64
         self.epochs = 800
         self.lr = 1e-3
         self.gama = 0.7
-        self.strides = 8
+        self.strides = 5
         self.en_cnn_k_s = 8
         self.dataset = DataSet.load_dataset(name='phm_data')
         self.train_bearings = ['Bearing1_1','Bearing1_2','Bearing2_1','Bearing2_2','Bearing3_1','Bearing3_2']
@@ -180,6 +180,7 @@ class RUL():
         log['teacher_ratio'] = []
         log['mean_er'] = []
         log['mean_abs_er'] = []
+        log['score'] = []
         count = 0
         count2 = 0
         e0 = 30
@@ -188,22 +189,26 @@ class RUL():
             train_loss = self._fit(e, seq2seq, optimizer, train_iter)
             val_loss = self._evaluate(seq2seq, train_iter)
             test_loss,er = self._evaluate(seq2seq, val_iter, cal_er=True)
-            print("[Epoch:%d][train_loss:%.4e][val_loss:%.4e][test_loss:%.4e][mean_er:%.4e][mean_abs_er:%.4e]"
-                % (e, train_loss, val_loss, test_loss, np.mean(er), np.mean(np.abs(er))))
+            score = self._cal_score(er)
+            print("[Epoch:%d][train_loss:%.4e][val_loss:%.4e][test_loss:%.4e][mean_er:%.4e][mean_abs_er:%.4e][score:%.4e]"
+                % (e, train_loss, val_loss, test_loss, np.mean(er), np.mean(np.abs(er), np.mean(score))))
             log['train_loss'].append(float(train_loss))
             log['val_loss'].append(float(val_loss))
             log['test_loss'].append(float(test_loss))
             log['teacher_ratio'].append(seq2seq.teacher_forcing_ratio)
             log['mean_er'].append(float(np.mean(er)))
             log['mean_abs_er'].append(float(np.mean(np.abs(er))))
+            log['score'].append(float(np.mean(score)))
             pd.DataFrame(log).to_csv('./model/log.csv',index=False)
             if float(val_loss) == min(log['val_loss']):
                 torch.save(seq2seq, './model/seq2seq')
             if (float(test_loss)*11 + float(val_loss)*6)/17 <= best_loss:
                 torch.save(seq2seq,'./model/best_seq2seq')
                 best_loss = (float(test_loss)*11 + float(val_loss)*6)/17
-            if float(np.mean(np.abs(er))) == min(log['mean_abs_er']):
-                torch.save(seq2seq,'./model/lowest_test_seq2seq')
+            # if float(np.mean(np.abs(er))) == min(log['mean_abs_er']):
+            #     torch.save(seq2seq,'./model/lowest_test_seq2seq')
+            if float(np.mean(score)) == max(log['score']):
+                torch.save(seq2seq,'./model/best_score_seq2seq')
             torch.save(seq2seq, './model/newest_seq2seq')
 
             count2 += 1
@@ -306,6 +311,19 @@ class RUL():
         else:
             return total_loss / len(val_iter)
 
+    
+    def _cal_score(self, er):
+        '''
+        er: a list
+        '''
+        score = []
+        for er_i in er:
+            if er_i <= 0:
+                score.append(np.exp(-np.log(.5)*er_i*20))
+            else:
+                score.append(np.exp(np.log(.5)*er_i*5))
+        return score
+
 
     def _fit(self, e, model, optimizer, train_iter, grad_clip=10.0):
         model.train()
@@ -387,12 +405,14 @@ class RUL():
             temp_label[i] = temp_label[i][:-self.en_cnn_k_s:self.strides] # when chang 10
         for i,x in enumerate(temp_data):
             temp_data[i] = x[::-1,].transpose(0,2,1)
-        time_feature = [self._get_time_fea(x) for x in temp_data]
+        # time_feature = [self._get_time_fea(x) for x in temp_data]
+        fre_feature = [self._get_fre_fea(x) for x in temp_data]
         if is_analyse:
-            time_fea_no_norm = [self._get_time_fea(x,is_norm=False) for x in temp_data]
-            return time_feature, time_fea_no_norm, temp_label
+            # time_fea_no_norm = [self._get_time_fea(x,is_norm=False) for x in temp_data]
+            fre_fea_no_norm = [self._get_fre_fea(x,is_norm=False) for x in temp_data]
+            return fre_feature, fre_fea_no_norm, temp_label
         else:
-            return time_feature, temp_label
+            return fre_feature, temp_label
 
     def _get_time_fea(self, data, is_norm=True):
         fea_dict = OrderedDict()
@@ -423,8 +443,20 @@ class RUL():
         fea = fea[:,np.newaxis,:]
         return fea
     
-    def _get_fre_fea(self, data):
-        pass
+    def _get_fre_fea(self, data, is_norm=True):
+        fft_data = np.fft.fft(data,axis=2)/data.shape[2]
+        fft_data = (np.abs(fft_data))**2
+        fea_list = []
+        for i in range(16):
+            fea_list.append(np.sum(fft_data[:,:,i*80:(i+1)*80],axis=2,keepdims=True))
+        fea = np.concatenate(fea_list,axis=2)
+        fea = fea.reshape(-1,fea.shape[1]*fea.shape[2])
+        self.feature_size = fea.shape[1]
+        if is_norm:
+            fea = self._normalize(fea,dim=1)
+        fea = fea[:,np.newaxis,:]
+        return fea
+
 
     def _normalize(self, data, dim=None):
         if dim == None:
