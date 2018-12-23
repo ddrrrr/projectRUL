@@ -27,11 +27,11 @@ class Encoder(nn.Module):
         self.cnn_kernel_size = cnn_k_s
         self.cnn_strides = strides
         self.cnn = nn.Sequential(
-            nn.Conv1d(self.input_size, 64, self.cnn_kernel_size, self.cnn_strides),
+            nn.Conv1d(self.input_size, 96, self.cnn_kernel_size, self.cnn_strides),
             # nn.ReLU()
             nn.PReLU()
             )
-        self.gru = nn.GRU(64, hidden_size, n_layers,
+        self.gru = nn.GRU(96, hidden_size, n_layers,
                           dropout=dropout, bidirectional=True)
 
     def forward(self, x, hidden=None):
@@ -145,9 +145,9 @@ class Seq2Seq(nn.Module):
 
 class RUL():
     def __init__(self):
-        self.hidden_size = 64
+        self.hidden_size = 128
         self.epochs = 800
-        self.lr = 1e-3
+        self.lr = 7e-3
         self.gama = 0.7
         self.strides = 5
         self.en_cnn_k_s = 8
@@ -190,8 +190,8 @@ class RUL():
             val_loss = self._evaluate(seq2seq, train_iter)
             test_loss,er = self._evaluate(seq2seq, val_iter, cal_er=True)
             score = self._cal_score(er)
-            print("[Epoch:%d][train_loss:%.4e][val_loss:%.4e][test_loss:%.4e][mean_er:%.4e][mean_abs_er:%.4e][score:%.4e]"
-                % (e, train_loss, val_loss, test_loss, np.mean(er), np.mean(np.abs(er), np.mean(score))))
+            print("[Epoch:%d][train_loss:%.4e][val_loss:%.4e][test_loss:%.4e][mean_er:%.4e][mean_abs_er:%.4e][score:%.4f]"
+                % (e, train_loss, val_loss, test_loss, np.mean(er), np.mean(np.abs(er)), np.mean(score)))
             log['train_loss'].append(float(train_loss))
             log['val_loss'].append(float(val_loss))
             log['test_loss'].append(float(test_loss))
@@ -314,15 +314,9 @@ class RUL():
     
     def _cal_score(self, er):
         '''
-        er: a list
+        er: a numpy array
         '''
-        score = []
-        for er_i in er:
-            if er_i <= 0:
-                score.append(np.exp(-np.log(.5)*er_i*20))
-            else:
-                score.append(np.exp(np.log(.5)*er_i*5))
-        return score
+        return np.exp(np.log(.5)*er*(np.sign(er)*12.5-7.5))
 
 
     def _fit(self, e, model, optimizer, train_iter, grad_clip=10.0):
@@ -447,8 +441,8 @@ class RUL():
         fft_data = np.fft.fft(data,axis=2)/data.shape[2]
         fft_data = (np.abs(fft_data))**2
         fea_list = []
-        for i in range(16):
-            fea_list.append(np.sum(fft_data[:,:,i*80:(i+1)*80],axis=2,keepdims=True))
+        for i in range(8):
+            fea_list.append(np.sum(fft_data[:,:,i*160:(i+1)*160],axis=2,keepdims=True))
         fea = np.concatenate(fea_list,axis=2)
         fea = fea.reshape(-1,fea.shape[1]*fea.shape[2])
         self.feature_size = fea.shape[1]
