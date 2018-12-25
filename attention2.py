@@ -163,6 +163,7 @@ class RUL():
         train_iter = [[train_data[i],train_label[i]] for i in range(len(train_data))]
         test_data,test_label = self._preprocess('test')
         val_iter = [[test_data[i],test_label[i]] for i in range(len(test_data))]
+        self.feature_size = train_data[0].shape[2]
 
         encoder = Encoder(self.feature_size,self.hidden_size,self.en_cnn_k_s,self.strides,n_layers=1,dropout=0.5)
         decoder = Decoder(self.hidden_size,1,n_layers=1,dropout=0.5)
@@ -172,6 +173,7 @@ class RUL():
         optimizer = optim.Adam(seq2seq.parameters(), lr=self.lr)
         # optimizer = optim.SGD(seq2seq.parameters(), lr=self.lr)
         # optimizer = optim.ASGD(seq2seq.parameters(), lr=self.lr)
+        # optimizer = optim.RMSprop(seq2seq.parameters(), lr=self.lr)
 
         log = OrderedDict()
         log['train_loss'] = []
@@ -183,10 +185,11 @@ class RUL():
         log['score'] = []
         count = 0
         count2 = 0
+        count3 = 0
         e0 = 30
         best_loss = 1
         for e in range(1, self.epochs+1):
-            train_loss = self._fit(e, seq2seq, optimizer, train_iter)
+            train_loss = self._fit(e, seq2seq, optimizer, train_iter, grad_clip=3.0)
             val_loss = self._evaluate(seq2seq, train_iter)
             test_loss,er = self._evaluate(seq2seq, val_iter, cal_er=True)
             score = self._cal_score(er)
@@ -223,6 +226,14 @@ class RUL():
 
             # if e == 200:
             #     optimizer = optim.ASGD(seq2seq.parameters(), lr=self.lr)
+
+            if float(train_loss) < min(log['train_loss']):
+                count3 += 1
+                if count3 > 20:
+                    optimizer.param_groups[0]['lr'] *= 0.3
+                    count3 = 0
+            else:
+                count3 = 0
                 
             # optimizer.param_groups[0]['lr'] = (self.lr - (e%e0) * (self.lr-1e-7) / e0)*0.99**e
 
@@ -304,6 +315,7 @@ class RUL():
                     x = np.arange(label_n.shape[0]) * self.strides
                     er.append(list(map(lambda x:x[1]/x[0],[np.polyfit(x,label_n,1),np.polyfit(x[5:],output_n[5:],1)])))
             loss = F.mse_loss(output,label)
+            # loss = F.l1_loss(output,label)
             total_loss += loss.data  
         if cal_er:
             er = list(map(lambda x:(x[0] - x[1]) / x[0], er))
@@ -332,6 +344,7 @@ class RUL():
             optimizer.zero_grad()
             output = model(data, label)
             loss = F.mse_loss(output,label)
+            # loss = F.l1_loss(output,label)
             loss.backward()
             clip_grad_norm_(model.parameters(), grad_clip)
             optimizer.step()
@@ -382,7 +395,7 @@ class RUL():
 
     
     def _preprocess(self, select, is_analyse=False):
-        max_len = 500
+        fea_type='fre'
         if select == 'train':
             temp_data = self.dataset.get_value('data',condition={'bearing_name':self.train_bearings})
             temp_label = self.dataset.get_value('RUL',condition={'bearing_name':self.train_bearings})
@@ -399,14 +412,48 @@ class RUL():
             temp_label[i] = temp_label[i][:-self.en_cnn_k_s:self.strides] # when chang 10
         for i,x in enumerate(temp_data):
             temp_data[i] = x[::-1,].transpose(0,2,1)
-        # time_feature = [self._get_time_fea(x) for x in temp_data]
-        fre_feature = [self._get_fre_fea(x) for x in temp_data]
-        if is_analyse:
-            # time_fea_no_norm = [self._get_time_fea(x,is_norm=False) for x in temp_data]
-            fre_fea_no_norm = [self._get_fre_fea(x,is_norm=False) for x in temp_data]
-            return fre_feature, fre_fea_no_norm, temp_label
+        
+        if fea_type == 'time':
+            temp_fun = self._get_time_fea
+        elif fea_type == 'fre':
+            temp_fun = self._get_fre_fea
+        elif fea_type == 'all':
+            temp_fun = [self._get_time_fea, self._get_fre_fea]
         else:
-            return fre_feature, temp_label
+            raise ValueError('error selection for features!')
+
+        if isinstance(temp_fun,list):
+            r_fea = []
+            for func in temp_fun:
+                r_fea.append([func(x) for x in temp_data])
+            r_fea = [np.concatenate((r_fea[j][i] for j in range(len(r_fea))),axis=2) for i in range(len(r_fea[0]))]
+        else:
+            r_fea = [temp_fun(x) for x in temp_data]
+
+        if is_analyse:
+            if isinstance(temp_fun,list):
+                r_fea_no_norm = []
+                for func in temp_fun:
+                    r_fea_no_norm.append([func(x,is_norm=False) for x in temp_data])
+                r_fea_no_norm = [np.concatenate((r_fea[j][i] for j in range(len(r_fea))),axis=2) for i in range(len(r_fea[0]))]
+            else:
+                r_fea_no_norm = [temp_fun(x,is_norm=False) for x in temp_data]
+            return r_fea, r_fea_no_norm, temp_label
+        else:
+            return r_fea, temp_label
+        
+        #     r_feature = [self._get_time_fea(x) for x in temp_data]
+
+        # time_feature = [self._get_time_fea(x) for x in temp_data]
+        # fre_feature = [self._get_fre_fea(x) for x in temp_data]
+        # r_feature = [np.concatenate((time_feature[i],fre_feature[i]),axis=2) for i in range(len(time_feature))]
+        # if is_analyse:
+        #     time_fea_no_norm = [self._get_time_fea(x,is_norm=False) for x in temp_data]
+        #     fre_fea_no_norm = [self._get_fre_fea(x,is_norm=False) for x in temp_data]
+        #     r_fea_no_norm = [np.concatenate((time_fea_no_norm[i],fre_fea_no_norm[i]),axis=2) for i in range(len(time_fea_no_norm))]
+        #     return r_feature, r_fea_no_norm, temp_label
+        # else:
+        #     return r_feature, temp_label
 
     def _get_time_fea(self, data, is_norm=True):
         fea_dict = OrderedDict()
@@ -431,7 +478,7 @@ class RUL():
 
         fea = np.concatenate(tuple(x for x in fea_dict.values()),axis=2)
         fea = fea.reshape(-1,fea.shape[1]*fea.shape[2])
-        self.feature_size = fea.shape[1]
+        # self.feature_size = fea.shape[1]
         if is_norm:
             fea = self._normalize(fea,dim=1)
         fea = fea[:,np.newaxis,:]
@@ -445,7 +492,7 @@ class RUL():
             fea_list.append(np.sum(fft_data[:,:,i*160:(i+1)*160],axis=2,keepdims=True))
         fea = np.concatenate(fea_list,axis=2)
         fea = fea.reshape(-1,fea.shape[1]*fea.shape[2])
-        self.feature_size = fea.shape[1]
+        # self.feature_size = fea.shape[1]
         if is_norm:
             fea = self._normalize(fea,dim=1)
         fea = fea[:,np.newaxis,:]
