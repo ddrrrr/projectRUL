@@ -27,11 +27,11 @@ class Encoder(nn.Module):
         self.cnn_kernel_size = cnn_k_s
         self.cnn_strides = strides
         self.cnn = nn.Sequential(
-            nn.Conv1d(self.input_size, 96, self.cnn_kernel_size, self.cnn_strides),
+            nn.Conv1d(self.input_size, 32, self.cnn_kernel_size, self.cnn_strides),
             # nn.ReLU()
             nn.PReLU()
             )
-        self.gru = nn.GRU(96, hidden_size, n_layers,
+        self.gru = nn.GRU(32, hidden_size, n_layers,
                           dropout=dropout, bidirectional=True)
 
     def forward(self, x, hidden=None):
@@ -227,13 +227,13 @@ class RUL():
             # if e == 200:
             #     optimizer = optim.ASGD(seq2seq.parameters(), lr=self.lr)
 
-            if float(train_loss) < min(log['train_loss']):
-                count3 += 1
-                if count3 > 20:
-                    optimizer.param_groups[0]['lr'] *= 0.3
-                    count3 = 0
-            else:
-                count3 = 0
+            # if float(train_loss) < min(log['train_loss']):
+            #     count3 += 1
+            #     if count3 > 20:
+            #         optimizer.param_groups[0]['lr'] *= 0.3
+            #         count3 = 0
+            # else:
+            #     count3 = 0
                 
             # optimizer.param_groups[0]['lr'] = (self.lr - (e%e0) * (self.lr-1e-7) / e0)*0.99**e
 
@@ -488,8 +488,8 @@ class RUL():
         fft_data = np.fft.fft(data,axis=2)/data.shape[2]
         fft_data = (np.abs(fft_data))**2
         fea_list = []
-        for i in range(8):
-            fea_list.append(np.sum(fft_data[:,:,i*160:(i+1)*160],axis=2,keepdims=True))
+        for i in range(5):
+            fea_list.append(np.sum(fft_data[:,:,i*256:(i+1)*256],axis=2,keepdims=True))
         fea = np.concatenate(fea_list,axis=2)
         fea = fea.reshape(-1,fea.shape[1]*fea.shape[2])
         # self.feature_size = fea.shape[1]
