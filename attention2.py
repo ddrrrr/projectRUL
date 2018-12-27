@@ -27,11 +27,11 @@ class Encoder(nn.Module):
         self.cnn_kernel_size = cnn_k_s
         self.cnn_strides = strides
         self.cnn = nn.Sequential(
-            nn.Conv1d(self.input_size, 32, self.cnn_kernel_size, self.cnn_strides),
+            nn.Conv1d(self.input_size, 64, self.cnn_kernel_size, self.cnn_strides),
             # nn.ReLU()
             nn.PReLU()
             )
-        self.gru = nn.GRU(32, hidden_size, n_layers,
+        self.gru = nn.GRU(64, hidden_size, n_layers,
                           dropout=dropout, bidirectional=True)
 
     def forward(self, x, hidden=None):
@@ -146,7 +146,7 @@ class Seq2Seq(nn.Module):
 class RUL():
     def __init__(self):
         self.hidden_size = 128
-        self.epochs = 800
+        self.epochs = 1000
         self.lr = 7e-3
         self.gama = 0.7
         self.strides = 5
