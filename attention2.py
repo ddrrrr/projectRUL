@@ -145,9 +145,9 @@ class Seq2Seq(nn.Module):
 
 class RUL():
     def __init__(self):
-        self.hidden_size = 128
-        self.epochs = 1000
-        self.lr = 7e-3
+        self.hidden_size = 200
+        self.epochs = 750
+        self.lr = 4e-3
         self.gama = 0.7
         self.strides = 5
         self.en_cnn_k_s = 8
@@ -189,7 +189,7 @@ class RUL():
         e0 = 30
         best_loss = 1
         for e in range(1, self.epochs+1):
-            train_loss = self._fit(e, seq2seq, optimizer, train_iter, grad_clip=3.0)
+            train_loss = self._fit(e, seq2seq, optimizer, train_iter, grad_clip=10.0)
             val_loss = self._evaluate(seq2seq, train_iter)
             test_loss,er = self._evaluate(seq2seq, val_iter, cal_er=True)
             score = self._cal_score(er)
