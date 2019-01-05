@@ -26,6 +26,7 @@ class Encoder(nn.Module):
         self.hidden_size = hidden_size
         self.cnn_kernel_size = cnn_k_s
         self.cnn_strides = strides
+        self.dropout = dropout
         self.cnn = nn.Sequential(
             nn.Conv1d(self.input_size, 64, self.cnn_kernel_size, self.cnn_strides),
             # nn.ReLU()
@@ -33,12 +34,15 @@ class Encoder(nn.Module):
             )
         self.gru = nn.GRU(64, hidden_size, n_layers,
                           dropout=dropout, bidirectional=True)
+        nn.init.constant(self.gru.bias_ih_l0[1], 1)
+        nn.init.constant(self.gru.bias_hh_l0[1], 1)
 
     def forward(self, x, hidden=None):
         x = x.permute(1,2,0)  # [B*N*T]
         # padding = self.cnn_kernel_size - x.size(2) % self.cnn_strides
         # x = F.pad(x, (0,padding))
         x = self.cnn(x)
+        x = F.dropout(x,p=self.dropout)
         x = x.permute(2,0,1).contiguous()  # [T*B*N]
         outputs, hidden = self.gru(x, hidden)
         outputs = (outputs[:, :, :self.hidden_size] +
@@ -85,7 +89,10 @@ class Decoder(nn.Module):
         self.attention = Attention(hidden_size)
         self.gru = nn.GRU(hidden_size + output_size, hidden_size,
                           n_layers, dropout=dropout)
+        nn.init.constant(self.gru.bias_ih_l0[1], 1)
+        nn.init.constant(self.gru.bias_hh_l0[1], 1)
         self.out = nn.Linear(hidden_size * 2, output_size)
+        self.dropout = dropout
 
     def forward(self, input, last_hidden, encoder_outputs):
         # Get the embedding of the current input word (last output word)
@@ -95,8 +102,10 @@ class Decoder(nn.Module):
         attn_weights = self.attention(last_hidden[-1], encoder_outputs)
         context = attn_weights.bmm(encoder_outputs.transpose(0, 1))  # (B,1,N)
         context = context.transpose(0, 1)  # (1,B,N)
+        # context = F.dropout(context, p=self.dropout)
         # Combine embedded input word and attended context, run through RNN
         rnn_input = torch.cat([embedded, context], 2)
+        rnn_input = F.dropout(rnn_input,p=self.dropout)
         output, hidden = self.gru(rnn_input, last_hidden)
         output = output.squeeze(0)  # (1,B,N) -> (B,N)
         context = context.squeeze(0)
@@ -145,7 +154,7 @@ class Seq2Seq(nn.Module):
 
 class RUL():
     def __init__(self):
-        self.hidden_size = 200
+        self.hidden_size = 164
         self.epochs = 750
         self.lr = 4e-3
         self.gama = 0.7
@@ -166,11 +175,13 @@ class RUL():
         self.feature_size = train_data[0].shape[2]
 
         encoder = Encoder(self.feature_size,self.hidden_size,self.en_cnn_k_s,self.strides,n_layers=1,dropout=0.5)
-        decoder = Decoder(self.hidden_size,1,n_layers=1,dropout=0.5)
+        decoder = Decoder(self.hidden_size,1,n_layers=1,dropout=0.3)
         seq2seq = Seq2Seq(encoder,decoder).cuda()
         # seq2seq = torch.load('./model/newest_seq2seq')
         seq2seq.teacher_forcing_ratio = 0.3
         optimizer = optim.Adam(seq2seq.parameters(), lr=self.lr)
+        # optimizer = optim.SparseAdam(seq2seq,lr=self.lr)
+        # optimizer = optim.Adamax(seq2seq.parameters(), lr=self.lr)
         # optimizer = optim.SGD(seq2seq.parameters(), lr=self.lr)
         # optimizer = optim.ASGD(seq2seq.parameters(), lr=self.lr)
         # optimizer = optim.RMSprop(seq2seq.parameters(), lr=self.lr)
@@ -493,8 +504,9 @@ class RUL():
         fea = np.concatenate(fea_list,axis=2)
         fea = fea.reshape(-1,fea.shape[1]*fea.shape[2])
         # self.feature_size = fea.shape[1]
-        if is_norm:
-            fea = self._normalize(fea,dim=1)
+        # if is_norm:
+        #     fea = self._normalize(fea,dim=1)
+        fea = fea/ (np.max(fea,axis=1,keepdims=True)).repeat(fea.shape[1],axis=1)
         fea = fea[:,np.newaxis,:]
         return fea
 
