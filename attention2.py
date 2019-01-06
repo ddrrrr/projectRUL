@@ -34,15 +34,15 @@ class Encoder(nn.Module):
             )
         self.gru = nn.GRU(64, hidden_size, n_layers,
                           dropout=dropout, bidirectional=True)
-        nn.init.constant(self.gru.bias_ih_l0[1], 1)
-        nn.init.constant(self.gru.bias_hh_l0[1], 1)
+        nn.init.constant(self.gru.bias_ih_l0[1], 1.5)
+        nn.init.constant(self.gru.bias_hh_l0[1], 1.5)
 
     def forward(self, x, hidden=None):
         x = x.permute(1,2,0)  # [B*N*T]
         # padding = self.cnn_kernel_size - x.size(2) % self.cnn_strides
         # x = F.pad(x, (0,padding))
         x = self.cnn(x)
-        x = F.dropout(x,p=self.dropout)
+        # x = F.dropout(x,p=self.dropout)
         x = x.permute(2,0,1).contiguous()  # [T*B*N]
         outputs, hidden = self.gru(x, hidden)
         outputs = (outputs[:, :, :self.hidden_size] +
@@ -89,8 +89,8 @@ class Decoder(nn.Module):
         self.attention = Attention(hidden_size)
         self.gru = nn.GRU(hidden_size + output_size, hidden_size,
                           n_layers, dropout=dropout)
-        nn.init.constant(self.gru.bias_ih_l0[1], 1)
-        nn.init.constant(self.gru.bias_hh_l0[1], 1)
+        # nn.init.constant(self.gru.bias_ih_l0[1], 1.5)
+        # nn.init.constant(self.gru.bias_hh_l0[1], 1.5)
         self.out = nn.Linear(hidden_size * 2, output_size)
         self.dropout = dropout
 
@@ -105,7 +105,7 @@ class Decoder(nn.Module):
         # context = F.dropout(context, p=self.dropout)
         # Combine embedded input word and attended context, run through RNN
         rnn_input = torch.cat([embedded, context], 2)
-        rnn_input = F.dropout(rnn_input,p=self.dropout)
+        # rnn_input = F.dropout(rnn_input,p=self.dropout)
         output, hidden = self.gru(rnn_input, last_hidden)
         output = output.squeeze(0)  # (1,B,N) -> (B,N)
         context = context.squeeze(0)
@@ -154,9 +154,9 @@ class Seq2Seq(nn.Module):
 
 class RUL():
     def __init__(self):
-        self.hidden_size = 164
+        self.hidden_size = 200
         self.epochs = 750
-        self.lr = 4e-3
+        self.lr = 7e-3
         self.gama = 0.7
         self.strides = 5
         self.en_cnn_k_s = 8
@@ -200,7 +200,7 @@ class RUL():
         e0 = 30
         best_loss = 1
         for e in range(1, self.epochs+1):
-            train_loss = self._fit(e, seq2seq, optimizer, train_iter, grad_clip=10.0)
+            train_loss = self._fit(e, seq2seq, optimizer, train_iter, grad_clip=5.0)
             val_loss = self._evaluate(seq2seq, train_iter)
             test_loss,er = self._evaluate(seq2seq, val_iter, cal_er=True)
             score = self._cal_score(er)
@@ -324,7 +324,7 @@ class RUL():
                     label_n = label.data.cpu().numpy().reshape(-1,)
                     output_n = output.data.cpu().numpy().reshape(-1,)
                     x = np.arange(label_n.shape[0]) * self.strides
-                    er.append(list(map(lambda x:x[1]/x[0],[np.polyfit(x,label_n,1),np.polyfit(x[5:],output_n[5:],1)])))
+                    er.append(list(map(lambda x:x[1]/x[0],[np.polyfit(x,label_n,1),np.polyfit(x[5:-5],output_n[5:-5],1)])))
             loss = F.mse_loss(output,label)
             # loss = F.l1_loss(output,label)
             total_loss += loss.data  
