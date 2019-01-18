@@ -10,7 +10,6 @@ from torch import nn, optim
 from torch.autograd import Variable
 import torch.nn.functional as F
 from torch.nn.utils import clip_grad_norm_
-from torchnet.logger import VisdomPlotLogger, VisdomLogger
 from dataset import DataSet
 
 '''
@@ -27,7 +26,6 @@ class Encoder(nn.Module):
         self.hidden_size = hidden_size
         self.cnn_kernel_size = cnn_k_s
         self.cnn_strides = strides
-        self.dropout = dropout
         self.cnn = nn.Sequential(
             nn.Conv1d(self.input_size, 64, self.cnn_kernel_size, self.cnn_strides),
             # nn.ReLU()
@@ -35,25 +33,12 @@ class Encoder(nn.Module):
             )
         self.gru = nn.GRU(64, hidden_size, n_layers,
                           dropout=dropout, bidirectional=True)
-        # nn.init.constant(self.gru.bias_ih_l0[hidden_size:2*hidden_size], 1)
-        # nn.init.constant(self.gru.bias_hh_l0[hidden_size:2*hidden_size], 1)
-        # nn.init.constant(self.gru.bias_ih_l0_reverse[hidden_size:2*hidden_size], 1)
-        # nn.init.constant(self.gru.bias_hh_l0_reverse[hidden_size:2*hidden_size], 1)
-        nn.init.uniform(self.gru.bias_ih_l0[hidden_size:2*hidden_size])
-        nn.init.uniform(self.gru.bias_hh_l0[hidden_size:2*hidden_size])
-        nn.init.uniform(self.gru.bias_ih_l0_reverse[hidden_size:2*hidden_size])
-        nn.init.uniform(self.gru.bias_hh_l0_reverse[hidden_size:2*hidden_size])
-        # nn.init.constant(self.gru.bias_ih_l1[hidden_size:2*hidden_size], 1)
-        # nn.init.constant(self.gru.bias_hh_l1[hidden_size:2*hidden_size], 1)
-        # nn.init.constant(self.gru.bias_ih_l1_reverse[hidden_size:2*hidden_size], 1)
-        # nn.init.constant(self.gru.bias_hh_l1_reverse[hidden_size:2*hidden_size], 1)
 
     def forward(self, x, hidden=None):
         x = x.permute(1,2,0)  # [B*N*T]
         # padding = self.cnn_kernel_size - x.size(2) % self.cnn_strides
         # x = F.pad(x, (0,padding))
         x = self.cnn(x)
-        # x = F.dropout(x,p=self.dropout)
         x = x.permute(2,0,1).contiguous()  # [T*B*N]
         outputs, hidden = self.gru(x, hidden)
         outputs = (outputs[:, :, :self.hidden_size] +
@@ -100,10 +85,7 @@ class Decoder(nn.Module):
         self.attention = Attention(hidden_size)
         self.gru = nn.GRU(hidden_size + output_size, hidden_size,
                           n_layers, dropout=dropout)
-        # nn.init.constant(self.gru.bias_ih_l0[1], 1.5)
-        # nn.init.constant(self.gru.bias_hh_l0[1], 1.5)
         self.out = nn.Linear(hidden_size * 2, output_size)
-        self.dropout = dropout
 
     def forward(self, input, last_hidden, encoder_outputs):
         # Get the embedding of the current input word (last output word)
@@ -113,10 +95,8 @@ class Decoder(nn.Module):
         attn_weights = self.attention(last_hidden[-1], encoder_outputs)
         context = attn_weights.bmm(encoder_outputs.transpose(0, 1))  # (B,1,N)
         context = context.transpose(0, 1)  # (1,B,N)
-        # context = F.dropout(context, p=self.dropout)
         # Combine embedded input word and attended context, run through RNN
         rnn_input = torch.cat([embedded, context], 2)
-        # rnn_input = F.dropout(rnn_input,p=self.dropout)
         output, hidden = self.gru(rnn_input, last_hidden)
         output = output.squeeze(0)  # (1,B,N) -> (B,N)
         context = context.squeeze(0)
@@ -166,7 +146,7 @@ class Seq2Seq(nn.Module):
 class RUL():
     def __init__(self):
         self.hidden_size = 200
-        self.epochs = 1000
+        self.epochs = 750
         self.lr = 4e-3
         self.gama = 0.7
         self.strides = 5
@@ -179,7 +159,6 @@ class RUL():
 
     
     def train(self):
-        # vis = visdom.Visdom(env='temp_log')
         train_data,train_label = self._preprocess('train')
         train_iter = [[train_data[i],train_label[i]] for i in range(len(train_data))]
         test_data,test_label = self._preprocess('test')
@@ -187,13 +166,11 @@ class RUL():
         self.feature_size = train_data[0].shape[2]
 
         encoder = Encoder(self.feature_size,self.hidden_size,self.en_cnn_k_s,self.strides,n_layers=1,dropout=0.5)
-        decoder = Decoder(self.hidden_size,1,n_layers=1,dropout=0.3)
+        decoder = Decoder(self.hidden_size,1,n_layers=1,dropout=0.5)
         seq2seq = Seq2Seq(encoder,decoder).cuda()
         # seq2seq = torch.load('./model/newest_seq2seq')
         seq2seq.teacher_forcing_ratio = 0.3
         optimizer = optim.Adam(seq2seq.parameters(), lr=self.lr)
-        # optimizer = optim.SparseAdam(seq2seq,lr=self.lr)
-        # optimizer = optim.Adamax(seq2seq.parameters(), lr=self.lr)
         # optimizer = optim.SGD(seq2seq.parameters(), lr=self.lr)
         # optimizer = optim.ASGD(seq2seq.parameters(), lr=self.lr)
         # optimizer = optim.RMSprop(seq2seq.parameters(), lr=self.lr)
@@ -206,22 +183,18 @@ class RUL():
         log['mean_er'] = []
         log['mean_abs_er'] = []
         log['score'] = []
-        score_logger = VisdomPlotLogger('line',opts={'title':'score logger'})
-        loss_logger = VisdomPlotLogger('line',opts={'title':'loss logger'})
         count = 0
         count2 = 0
         count3 = 0
-        e0 = 120
+        e0 = 30
         best_loss = 1
         for e in range(1, self.epochs+1):
-            train_loss = self._fit(e, seq2seq, optimizer, train_iter, grad_clip=5.0)
+            train_loss = self._fit(e, seq2seq, optimizer, train_iter, grad_clip=10.0)
             val_loss = self._evaluate(seq2seq, train_iter)
             test_loss,er = self._evaluate(seq2seq, val_iter, cal_er=True)
             score = self._cal_score(er)
             print("[Epoch:%d][train_loss:%.4e][val_loss:%.4e][test_loss:%.4e][mean_er:%.4e][mean_abs_er:%.4e][score:%.4f]"
                 % (e, train_loss, val_loss, test_loss, np.mean(er), np.mean(np.abs(er)), np.mean(score)))
-            score_logger.log(e,np.mean(score))
-            loss_logger.log(e,[train_loss,val_loss,test_loss])
             log['train_loss'].append(float(train_loss))
             log['val_loss'].append(float(val_loss))
             log['test_loss'].append(float(test_loss))
@@ -251,18 +224,18 @@ class RUL():
                 count -= 1
                 count2 = 0
 
-            # if e % 150 == 0:
-            #     optimizer.param_groups[0]['lr'] *= 0.9
+            # if e == 200:
+            #     optimizer = optim.ASGD(seq2seq.parameters(), lr=self.lr)
 
-            # if float(val_loss) < min(log['val_loss']):
+            # if float(train_loss) < min(log['train_loss']):
             #     count3 += 1
-            #     if count3 > 100:
-            #         optimizer.param_groups[0]['lr'] *= 0.5
+            #     if count3 > 20:
+            #         optimizer.param_groups[0]['lr'] *= 0.3
             #         count3 = 0
             # else:
             #     count3 = 0
                 
-            # optimizer.param_groups[0]['lr'] = (self.lr - (e%e0) * (self.lr-1e-7) / e0)
+            # optimizer.param_groups[0]['lr'] = (self.lr - (e%e0) * (self.lr-1e-7) / e0)*0.99**e
 
             # if e % 20 == 0:
             #     self._plot_result(seq2seq, train_iter, val_iter)
@@ -275,6 +248,29 @@ class RUL():
 
         seq2seq = torch.load('./model/best_seq2seq')
         self._plot_result(seq2seq, train_iter, val_iter)
+    
+    def online_test(self):
+        test_data,test_label = self._preprocess('test')
+        val_iter = [[test_data[i],test_label[i]] for i in range(len(test_data))]
+
+        seq2seq = torch.load('./model/1-2_continue_best_score_seq2seq')
+        seq2seq.eval()
+
+        online_analyse = OrderedDict()
+        online_analyse['test_label'] = test_label
+        online_analyse['test_result'] = []
+
+        with torch.no_grad():
+            for [data, label] in val_iter:
+                for i in range(5):
+                    t_data, t_label = torch.from_numpy(data[round(i*data.shape[0]/5):,].copy()), torch.from_numpy(label[round(i*label.shape[0]/5):,].copy())
+                    t_data, t_label = t_data.type(torch.FloatTensor), t_label.type(torch.FloatTensor)
+                    t_data = Variable(t_data).cuda()
+                    t_label = Variable(t_label).cuda()
+                    output = seq2seq(t_data, t_label, teacher_forcing_ratio=0.0)
+                    online_analyse['test_result'].append(output.data.cpu().numpy())
+        
+        sio.savemat('online_test.mat',online_analyse)
 
     def analyse(self):
         analyse_data = OrderedDict()
@@ -340,7 +336,7 @@ class RUL():
                     label_n = label.data.cpu().numpy().reshape(-1,)
                     output_n = output.data.cpu().numpy().reshape(-1,)
                     x = np.arange(label_n.shape[0]) * self.strides
-                    er.append(list(map(lambda x:x[1]/x[0],[np.polyfit(x,label_n,1),np.polyfit(x[5:-5],output_n[5:-5],1)])))
+                    er.append(list(map(lambda x:x[1]/x[0],[np.polyfit(x,label_n,1),np.polyfit(x[5:],output_n[5:],1)])))
             loss = F.mse_loss(output,label)
             # loss = F.l1_loss(output,label)
             total_loss += loss.data  
@@ -522,7 +518,6 @@ class RUL():
         # self.feature_size = fea.shape[1]
         if is_norm:
             fea = self._normalize(fea,dim=1)
-            # fea = fea/ (np.max(fea,axis=1,keepdims=True)).repeat(fea.shape[1],axis=1)
         fea = fea[:,np.newaxis,:]
         return fea
 
@@ -541,6 +536,7 @@ class RUL():
 
 if __name__ == '__main__':
     process = RUL()
-    process.train()
-    process.analyse()
-    process.test()
+    # process.train()
+    # process.analyse()
+    # process.test()
+    process.online_test()
